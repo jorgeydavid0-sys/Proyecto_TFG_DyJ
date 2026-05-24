@@ -2,50 +2,69 @@ import javax.swing.*;
 import java.awt.*;
 
 public class GameWindow extends JFrame {
-    private final GamePanel gamePanel;
+
+    private final Client     client;
+    private final LoginPanel loginPanel;
+    private GamePanel        gamePanel;
 
     public GameWindow(Client client) {
-        setTitle("Proyecto TFG - Cliente");
+        this.client = client;
+        setTitle("Escuela Interactiva 2D");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-
-        gamePanel = new GamePanel(client);
-        add(gamePanel);
-
-        pack();
-        setLocationRelativeTo(null);
         setResizable(false);
+
+        loginPanel = new LoginPanel(client);
+        setContentPane(loginPanel);
+        pack();
+        setSize(500, 480);
+        setLocationRelativeTo(null);
     }
 
+    // ── Despacho de mensajes del servidor ─────────────────────────────────
+
     public void handleServerMessage(String message) {
-        String[] parts = message.split("\\|", 3);
-        switch (parts[0]) {
-            case "POSITION":
-                int x = Integer.parseInt(parts[1]);
-                int y = Integer.parseInt(parts[2]);
-                gamePanel.updatePlayerPosition(x, y);
-                break;
-            case "OBJECT_DATA":
-                showObjectDialog(parts[1], parts[2]);
-                break;
+        SwingUtilities.invokeLater(() -> dispatch(message));
+    }
+
+    private void dispatch(String message) {
+        if (message.startsWith("LOGIN_OK|") || message.startsWith("REGISTER_OK|")) {
+            handleLoginOk(message);
+        } else if (message.startsWith("LOGIN_ERR|")) {
+            loginPanel.setStatus(message.substring(10));
+        } else if (message.startsWith("REGISTER_ERR|")) {
+            loginPanel.setStatus(message.substring(13));
+        } else if (gamePanel != null) {
+            gamePanel.handleServerMessage(message);
         }
     }
 
-    private void showObjectDialog(String title, String content) {
+    private void handleLoginOk(String message) {
+        // LOGIN_OK|nombre|color|rol|userId|x|y|zone
+        String[] p = message.split("\\|");
+        if (p.length < 8) return;
+        String nombre = p[1];
+        String color  = p[2];
+        String rol    = p[3];
+        int    userId = Integer.parseInt(p[4]);
+        int    px     = Integer.parseInt(p[5]);
+        int    py     = Integer.parseInt(p[6]);
+        String zone   = p[7];
+
+        gamePanel = new GamePanel(client, nombre, color, rol, userId, px, py, zone);
+        setContentPane(gamePanel);
+        setSize(840, 600 + 60); // mapa + barra de chat
+        setLocationRelativeTo(null);
+        revalidate();
+        repaint();
+        gamePanel.requestFocusInWindow();
+    }
+
+    // ── Diálogo de datos (tablón, horario, menú, notas) ──────────────────
+
+    public void showDataDialog(String type, String serialData) {
         SwingUtilities.invokeLater(() -> {
-            JDialog dialog = new JDialog(this, title, false);
-            dialog.setLayout(new BorderLayout());
-
-            JTextArea text = new JTextArea(content);
-            text.setEditable(false);
-            text.setLineWrap(true);
-            text.setWrapStyleWord(true);
-            text.setMargin(new Insets(10, 10, 10, 10));
-            text.setFont(new Font("SansSerif", Font.PLAIN, 13));
-
-            dialog.add(new JScrollPane(text), BorderLayout.CENTER);
-            dialog.setSize(320, 180);
-            dialog.setLocationRelativeTo(this);
-            dialog.setVisible(true);
+            DataDialog d = new DataDialog(this, type, serialData);
+            d.setVisible(true);
         });
     }
 }

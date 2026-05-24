@@ -1,4 +1,5 @@
 @echo off
+echo Iniciando cliente...
 cd client
-java Client
+java -cp ".;../lib/*" Client
 pause

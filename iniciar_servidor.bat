@@ -1,4 +1,5 @@
 @echo off
+echo Iniciando servidor...
 cd server
-java Server
+java -cp ".;../lib/*" Server
 pause
