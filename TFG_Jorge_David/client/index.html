@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Escuela Interactiva 2D — Plataforma escolar gamificada con mapa interactivo en pixel-art. TFG Jorge González DAM 2º">
+    <title>🏫 Escuela Interactiva 2D</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css?v=2">
+</head>
+<body>
+
+<!-- ═══ PANTALLA DE LOGIN ═══ -->
+<div id="login-screen" class="screen active">
+    <div class="login-bg">
+        <div class="login-particles" id="particles"></div>
+        <div class="login-glow"></div>
+    </div>
+
+    <div class="login-container">
+        <!-- Logo -->
+        <div class="login-logo">
+            <div class="logo-pixel-art" id="logo-pixel"></div>
+            <h1 class="logo-title">Escuela Interactiva</h1>
+            <p class="logo-subtitle">Tu campus virtual en 2D · TFG Jorge González</p>
+        </div>
+
+        <!-- Tabs: Login / Registro -->
+        <div class="auth-tabs">
+            <button id="tab-login"    class="tab-btn active" onclick="switchTab('login')">Iniciar Sesión</button>
+            <button id="tab-register" class="tab-btn"        onclick="switchTab('register')">Registrarse</button>
+        </div>
+
+        <!-- Formulario Login -->
+        <form id="form-login" class="auth-form" onsubmit="handleLogin(event)">
+            <div class="input-group">
+                <label for="login-username">👤 Usuario</label>
+                <input type="text" id="login-username" placeholder="Tu nombre de usuario" maxlength="50" autocomplete="username" required>
+            </div>
+            <div class="input-group">
+                <label for="login-password">🔒 Contraseña</label>
+                <input type="password" id="login-password" placeholder="Tu contraseña" maxlength="100" autocomplete="current-password" required>
+            </div>
+            <div class="demo-hint">
+                💡 Demo rápido: <strong>jorge_dam2</strong> / <strong>alumno123</strong>
+                <br>O cualquier usuario (≥3 letras) con contraseña «<strong>demo</strong>»
+            </div>
+            <button type="submit" id="btn-login" class="btn-primary">
+                <span class="btn-icon">🎮</span>
+                <span>Entrar al Campus</span>
+            </button>
+            <p id="login-error" class="form-error hidden"></p>
+        </form>
+
+        <!-- Formulario Registro -->
+        <form id="form-register" class="auth-form hidden" onsubmit="handleRegister(event)">
+            <div class="form-row">
+                <div class="input-group">
+                    <label for="reg-nombre">📝 Nombre</label>
+                    <input type="text" id="reg-nombre" placeholder="Tu nombre" maxlength="50" required>
+                </div>
+                <div class="input-group">
+                    <label for="reg-apellidos">📝 Apellidos</label>
+                    <input type="text" id="reg-apellidos" placeholder="Tus apellidos" maxlength="100" required>
+                </div>
+            </div>
+            <div class="input-group">
+                <label for="reg-username">👤 Nombre de usuario</label>
+                <input type="text" id="reg-username" placeholder="Ej: jorge_dam2" maxlength="50" autocomplete="username" required>
+            </div>
+            <div class="input-group">
+                <label for="reg-password">🔒 Contraseña</label>
+                <input type="password" id="reg-password" placeholder="Mínimo 4 caracteres" maxlength="100" autocomplete="new-password" required>
+            </div>
+            <div class="input-group">
+                <label>🎨 Color del Avatar</label>
+                <div class="color-picker-row" id="color-picker">
+                    <button type="button" class="color-btn selected" data-color="#4A90D9" style="background:#4A90D9"></button>
+                    <button type="button" class="color-btn" data-color="#E74C3C" style="background:#E74C3C"></button>
+                    <button type="button" class="color-btn" data-color="#2ECC71" style="background:#2ECC71"></button>
+                    <button type="button" class="color-btn" data-color="#F39C12" style="background:#F39C12"></button>
+                    <button type="button" class="color-btn" data-color="#9B59B6" style="background:#9B59B6"></button>
+                    <button type="button" class="color-btn" data-color="#1ABC9C" style="background:#1ABC9C"></button>
+                    <button type="button" class="color-btn" data-color="#E91E63" style="background:#E91E63"></button>
+                    <button type="button" class="color-btn" data-color="#FF5722" style="background:#FF5722"></button>
+                </div>
+            </div>
+            <button type="submit" id="btn-register" class="btn-primary">
+                <span class="btn-icon">✨</span>
+                <span>Crear Cuenta</span>
+            </button>
+            <p id="register-error" class="form-error hidden"></p>
+        </form>
+    </div>
+</div>
+
+<!-- ═══ PANTALLA DE JUEGO ═══ -->
+<div id="game-screen" class="screen">
+    <!-- Canvas de Phaser.js se inyecta aquí -->
+    <div id="phaser-container"></div>
+
+    <!-- HUD Superior -->
+    <div id="hud-top">
+        <div id="hud-zone">🏫 <span id="hud-zone-name">Entrada Exterior</span></div>
+        <div id="hud-player">
+            <span id="hud-username"></span>
+            <span id="hud-rol-badge" class="rol-badge"></span>
+        </div>
+        <div id="hud-online">👥 <span id="hud-online-count">1</span> en línea</div>
+    </div>
+
+    <!-- HUD Inferior: Controles -->
+    <div id="controls-hint">
+        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Mover</span>
+        <span><kbd>E</kbd> Interactuar</span>
+        <span><kbd>Enter</kbd> Chat</span>
+        <button id="btn-fullscreen" title="Pantalla completa">⛶</button>
+    </div>
+
+    <!-- Indicador de interacción -->
+    <div id="interaction-hint" class="hidden">
+        <span id="interaction-hint-label"></span>
+        <kbd>E</kbd>
+    </div>
+
+    <!-- Indicador de transición de zona -->
+    <div id="transition-hint" class="hidden">
+        <span id="transition-hint-label"></span>
+        <kbd>E</kbd>
+    </div>
+
+    <!-- Panel Chat -->
+    <div id="chat-panel" class="hidden">
+        <div class="chat-header">
+            <span>💬 Chat de Zona</span>
+            <button id="btn-chat-close">✕</button>
+        </div>
+        <div id="chat-messages"></div>
+        <div class="chat-input-row">
+            <input type="text" id="chat-input" placeholder="Escribe un mensaje..." maxlength="200" autocomplete="off">
+            <button id="btn-chat-send">➤</button>
+        </div>
+    </div>
+
+    <!-- Panel de Datos (modal) -->
+    <div id="data-panel" class="hidden">
+        <div class="panel-backdrop" onclick="closeDataPanel()"></div>
+        <div class="panel-box">
+            <div class="panel-header">
+                <h2 id="panel-title">Título</h2>
+                <button id="btn-panel-close" onclick="closeDataPanel()">✕</button>
+            </div>
+            <div id="panel-content" class="panel-content">
+                <div class="loading-spinner">⏳ Cargando...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Overlay de transición entre zonas -->
+    <div id="zone-fade" class="hidden"></div>
+</div>
+
+<!-- ═══ SCRIPTS ═══ -->
+<!-- Socket.IO Client -->
+<script src="/socket.io/socket.io.js"></script>
+<!-- Phaser.js v3 -->
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+<!-- Escenas del juego -->
+<script src="js/scenes/BootScene.js?v=2"></script>
+<script src="js/scenes/MapScene.js?v=2"></script>
+<!-- Inicialización Phaser + lógica de login -->
+<script src="js/network.js?v=2"></script>
+<script src="js/main.js?v=2"></script>
+
+</body>
+</html>
