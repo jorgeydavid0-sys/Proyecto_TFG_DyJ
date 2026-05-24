@@ -5,24 +5,23 @@ public class Client {
     static final String HOST = "localhost";
     static final int    PORT = 5000;
 
-    private Socket socket;
+    private Socket     socket;
     private PrintWriter out;
-    private GameWindow gameWindow;
+    private GameWindow  gameWindow;
 
     public void connect() throws IOException {
-        socket = new Socket(HOST, PORT);
-        out    = new PrintWriter(socket.getOutputStream(), true);
-        BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
+        socket     = new Socket(HOST, PORT);
+        out        = new PrintWriter(new OutputStreamWriter(socket.getOutputStream(), "UTF-8"), true);
         gameWindow = new GameWindow(this);
         gameWindow.setVisible(true);
 
         new Thread(() -> {
             try {
-                String message;
-                while ((message = in.readLine()) != null) {
-                    gameWindow.handleServerMessage(message);
-                }
+                BufferedReader in = new BufferedReader(
+                    new InputStreamReader(socket.getInputStream(), "UTF-8"));
+                String line;
+                while ((line = in.readLine()) != null)
+                    gameWindow.handleServerMessage(line);
             } catch (IOException e) {
                 System.out.println("Desconectado del servidor");
             }
@@ -30,7 +29,7 @@ public class Client {
     }
 
     public void sendMessage(String message) {
-        out.println(message);
+        if (out != null) out.println(message);
     }
 
     public static void main(String[] args) throws IOException {
