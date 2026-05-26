@@ -6,6 +6,7 @@ public class GameWindow extends JFrame {
     private final Client     client;
     private final LoginPanel loginPanel;
     private GamePanel        gamePanel;
+    private AdminPanel       adminPanel;
 
     public GameWindow(Client client) {
         this.client = client;
@@ -33,6 +34,8 @@ public class GameWindow extends JFrame {
             loginPanel.setStatus(message.substring(10));
         } else if (message.startsWith("REGISTER_ERR|")) {
             loginPanel.setStatus(message.substring(13));
+        } else if (adminPanel != null) {
+            adminPanel.handleServerMessage(message);
         } else if (gamePanel != null) {
             gamePanel.handleServerMessage(message);
         }
@@ -50,13 +53,19 @@ public class GameWindow extends JFrame {
         int    py     = Integer.parseInt(p[6]);
         String zone   = p[7];
 
-        gamePanel = new GamePanel(client, nombre, color, rol, userId, px, py, zone);
-        setContentPane(gamePanel);
-        setSize(840, 600 + 60); // mapa + barra de chat
+        if ("admin".equals(rol)) {
+            adminPanel = new AdminPanel(client, nombre, userId);
+            setContentPane(adminPanel);
+            setSize(820, 580);
+        } else {
+            gamePanel = new GamePanel(client, nombre, color, rol, userId, px, py, zone);
+            setContentPane(gamePanel);
+            setSize(840, 600 + 60);
+            gamePanel.requestFocusInWindow();
+        }
         setLocationRelativeTo(null);
         revalidate();
         repaint();
-        gamePanel.requestFocusInWindow();
     }
 
     // ── Diálogo de datos (tablón, horario, menú, notas) ──────────────────

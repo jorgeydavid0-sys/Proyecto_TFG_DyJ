@@ -551,10 +551,14 @@ public class GamePanel extends JPanel implements KeyListener {
         if (nearbyInteraction == null) return;
         String label;
         switch (nearbyInteraction) {
-            case "tablon":       label = "Tablón de Anuncios  [E]"; break;
-            case "horario":      label = "Horario / Calendario  [E]"; break;
-            case "menu_comedor": label = "Menú del Comedor  [E]"; break;
-            case "notas":        label = "Notas y Calificaciones  [E]"; break;
+            case "tablon":
+                label = "profesor".equals(myRol) ? "Tablón / Publicar  [E]" : "Tablón de Anuncios  [E]"; break;
+            case "horario":
+                label = "Horario / Calendario  [E]"; break;
+            case "menu_comedor":
+                label = "Menú del Comedor  [E]"; break;
+            case "notas":
+                label = "profesor".equals(myRol) ? "Poner nota a alumno  [E]" : "Notas y Calificaciones  [E]"; break;
             default: return;
         }
         g.setFont(new Font("SansSerif", Font.BOLD, 13));
@@ -744,6 +748,15 @@ public class GamePanel extends JPanel implements KeyListener {
             case "DATA_NOTAS":
                 showData("notas", msg.substring("DATA_NOTAS|".length()));
                 break;
+            case "DATA_ALUMNOS":
+                showProfesorNotas(msg.substring("DATA_ALUMNOS|".length()));
+                break;
+            case "PROF_OK":
+                showNotif(p.length >= 2 && "nota".equals(p[1]) ? "Nota guardada correctamente" : "Anuncio publicado correctamente", false);
+                break;
+            case "PROF_ERR":
+                showNotif(p.length >= 2 ? p[1] : "Error", true);
+                break;
         }
     }
 
@@ -752,6 +765,20 @@ public class GamePanel extends JPanel implements KeyListener {
             JFrame parent = (JFrame) SwingUtilities.getWindowAncestor(this);
             if (parent instanceof GameWindow)
                 ((GameWindow) parent).showDataDialog(type, data);
+        });
+    }
+
+    private void showProfesorNotas(String data) {
+        SwingUtilities.invokeLater(() -> {
+            JFrame parent = (JFrame) SwingUtilities.getWindowAncestor(this);
+            new ProfesorNotasDialog(parent, client, data).setVisible(true);
+        });
+    }
+
+    private void showNotif(String msg, boolean error) {
+        SwingUtilities.invokeLater(() -> {
+            JOptionPane.showMessageDialog(this, msg, "Info",
+                error ? JOptionPane.ERROR_MESSAGE : JOptionPane.INFORMATION_MESSAGE);
         });
     }
 
@@ -854,6 +881,27 @@ public class GamePanel extends JPanel implements KeyListener {
         return null;
     }
 
+    private void handleProfesorInteract(String type) {
+        switch (type) {
+            case "tablon": {
+                String[] opts = {"Ver anuncios", "Publicar anuncio"};
+                int choice = JOptionPane.showOptionDialog(this, "¿Qué deseas hacer?", "Tablón",
+                    JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null, opts, opts[0]);
+                if (choice == 0) client.sendMessage("INTERACT|tablon");
+                else if (choice == 1) {
+                    JFrame parent = (JFrame) SwingUtilities.getWindowAncestor(this);
+                    new ProfesorAnuncioDialog(parent, client).setVisible(true);
+                }
+                break;
+            }
+            case "notas":
+                client.sendMessage("PROF_GET_ALUMNOS");
+                break;
+            default:
+                client.sendMessage("INTERACT|" + type);
+        }
+    }
+
     // ── Input ─────────────────────────────────────────────────────────
 
     @Override
@@ -888,7 +936,10 @@ public class GamePanel extends JPanel implements KeyListener {
             }
             case KeyEvent.VK_E: {
                 String inter = getNearbyInteraction();
-                if (inter != null) client.sendMessage("INTERACT|" + inter);
+                if (inter != null) {
+                    if ("profesor".equals(myRol)) handleProfesorInteract(inter);
+                    else client.sendMessage("INTERACT|" + inter);
+                }
                 break;
             }
         }
