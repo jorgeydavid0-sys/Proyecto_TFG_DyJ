@@ -56,9 +56,26 @@ public class GamePanel extends JPanel implements KeyListener {
     private Timer   fadeTimer;
 
     // ── Chat ───────────────────────────────────────────────────────────
-    private final List<String[]> chatMessages = new ArrayList<>(); // [nombre, color, texto]
-    private boolean chatActive = false;
-    private final StringBuilder chatInput = new StringBuilder();
+    private static class PmChat {
+        final String       name;
+        final Color        color;
+        final List<String[]> messages = new ArrayList<>(); // ["1"|"0", texto]
+        boolean hasUnread = false;
+        boolean isFake    = false;
+        PmChat(String name, Color color) { this.name = name; this.color = color; }
+    }
+
+    private final List<String[]> chatMessages  = new ArrayList<>(); // [nombre, color, texto]
+    private final List<PmChat>   pmChats        = new ArrayList<>();
+    private int                  activePmIdx    = -1; // -1 = chat global
+    private final List<Rectangle> pmTabRects    = new ArrayList<>();
+    private final List<Rectangle> pmCloseRects  = new ArrayList<>();
+    private final Rectangle       globalTabRect = new Rectangle();
+    private boolean chatActive    = false;
+    private boolean chatVisible   = true;
+    private boolean skipNextTyped = false;
+    private final StringBuilder chatInput     = new StringBuilder();
+    private final Rectangle     chatToggleBtn = new Rectangle();
 
     // ── Input ──────────────────────────────────────────────────────────
     private final Set<Integer> pressedKeys = new HashSet<>();
@@ -66,9 +83,15 @@ public class GamePanel extends JPanel implements KeyListener {
 
     // ── Interacción ────────────────────────────────────────────────────
     private String nearbyInteraction = null;
+    private TemarioDialog  temarioDialog  = null;
+    private TrabajoDialog  trabajoDialog  = null;
+
+    // ── Tutorial NPC ───────────────────────────────────────────────────
+    private TutorialNPC    tutorialNPC    = null;
+    private boolean        primerLogin    = false;
 
     public GamePanel(Client client, String name, String color, String rol,
-                     int userId, int x, int y, String zone) {
+                     int userId, int x, int y, String zone, boolean primerLogin) {
         this.client    = client;
         this.myName    = name;
         this.myColor   = parseColor(color);
@@ -77,19 +100,68 @@ public class GamePanel extends JPanel implements KeyListener {
         this.playerX   = x;
         this.playerY   = y;
         this.currentZone = zone;
+        this.primerLogin = primerLogin;
 
         setPreferredSize(new Dimension(W, H + 60));
         setBackground(Color.BLACK);
         setFocusable(true);
         addKeyListener(this);
+        addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                Point p = e.getPoint();
+                if (chatToggleBtn.contains(p)) {
+                    chatVisible = !chatVisible;
+                    if (!chatVisible) chatActive = false;
+                    repaint();
+                    return;
+                }
+                if (!chatVisible) return;
+                // Cerrar pestaña PM (✕)
+                for (int i = 0; i < pmCloseRects.size(); i++) {
+                    if (pmCloseRects.get(i).contains(p)) {
+                        pmChats.remove(i);
+                        pmTabRects.remove(i);
+                        pmCloseRects.remove(i);
+                        if (activePmIdx >= pmChats.size())
+                            activePmIdx = pmChats.isEmpty() ? -1 : pmChats.size() - 1;
+                        repaint();
+                        return;
+                    }
+                }
+                // Cambiar pestaña PM
+                for (int i = 0; i < pmTabRects.size(); i++) {
+                    if (pmTabRects.get(i).contains(p)) {
+                        activePmIdx = i;
+                        pmChats.get(i).hasUnread = false;
+                        repaint();
+                        return;
+                    }
+                }
+                // Pestaña Global
+                if (globalTabRect.contains(p)) {
+                    activePmIdx = -1;
+                    repaint();
+                }
+            }
+        });
 
         // Bucle de movimiento: 100ms = 10 pasos/seg
         moveTimer = new Timer(100, e -> tickMovement());
         moveTimer.start();
 
         // Bucle de animación: 33ms ≈ 30fps
-        Timer renderTimer = new Timer(33, e -> { animTimer++; repaint(); });
+        Timer renderTimer = new Timer(33, e -> {
+            animTimer++;
+            if (tutorialNPC != null) tutorialNPC.update(playerX, playerY, currentZone);
+            repaint();
+        });
         renderTimer.start();
+
+        // Iniciar NPC tutorial solo si es alumno en primer login
+        if (primerLogin && "alumno".equals(rol)) {
+            tutorialNPC = new TutorialNPC(this, playerX, playerY, zone);
+        }
     }
 
     // ── Construcción de mapas de tiles ─────────────────────────────────
@@ -147,9 +219,9 @@ public class GamePanel extends JPanel implements KeyListener {
 
         // ── Fila 7: umbral con puertas ────────────────────────────────
         m[2][7] = 21; m[3][7] = 21; m[4][7] = 21; m[5][7] = 21;
-        m[6][7]  = 5;  m[7][7]  = 5;              // puerta izquierda
+        m[6][7]  = 5;  m[7][7]  = 26;             // puerta izquierda (der: volteada)
         for (int c = 8; c <= 12; c++) m[c][7] = 21; // muro entre puertas
-        m[13][7] = 5;  m[14][7] = 5;              // puerta derecha
+        m[13][7] = 5;  m[14][7] = 26;             // puerta derecha (der: volteada)
         m[15][7] = 21; m[16][7] = 21; m[17][7] = 21; m[18][7] = 21;
 
         // ── Fila 8: escalones de entrada ──────────────────────────────
@@ -162,11 +234,6 @@ public class GamePanel extends JPanel implements KeyListener {
             m[9][r] = 1; m[10][r] = 1; m[11][r] = 1;
         }
 
-        // ── Árboles decorativos ────────────────────────────────────────
-        m[1][9]  = 6; m[1][10]  = 7;
-        m[19][9] = 6; m[19][10] = 7;
-        m[3][12] = 6; m[3][13]  = 7;
-        m[17][12]= 6; m[17][13] = 7;
 
         return m;
     }
@@ -178,17 +245,25 @@ public class GamePanel extends JPanel implements KeyListener {
 
         for (int c = 0; c < MAP_COLS; c++) { m[c][0] = 9; m[c][1] = 9; } // paredes
 
-        // Tablón de anuncios (fila 1, cols 3-5)
-        m[3][1] = 10; m[4][1] = 10; m[5][1] = 10;
-        // Horario/Calendario (fila 1, cols 15-17)
-        m[15][1] = 15; m[16][1] = 15; m[17][1] = 15;
-        // Mostrador central (filas 5-7, cols 7-13)
-        for (int c = 7; c <= 13; c++) for (int r = 5; r <= 7; r++) m[c][r] = 11;
-        // Puerta izquierda a conserjería (col 0, filas 5-8)
-        m[0][5] = 5; m[0][6] = 5; m[0][7] = 5; m[0][8] = 5;
+        // Tablón de anuncios (fila 1, cols 3-4)
+        m[3][1] = 10; m[4][1] = 10;
+        // Horario/Calendario (fila 1, cols 15-16)
+        m[15][1] = 15; m[16][1] = 15;
+        // Bordes izquierdo (col 0) y derecho (col 20), filas 2-13
+        for (int r = 2; r <= 13; r++) {
+            if (r != 6 && r != 7) m[0][r] = 9; // izquierda, excepto puertas
+            m[20][r] = 9;                        // derecha
+        }
+        // Borde inferior (fila 14): solo esquinas con tile de pared
+        m[0][14] = 9;
+        m[20][14] = 9;
+        // Escalones (cols 6-14): fila 12 claro, fila 13 medio, fila 14 oscuro
+        for (int c = 6; c <= 14; c++) { m[c][12] = 29; m[c][13] = 30; m[c][14] = 31; }
+        // Puerta izquierda a conserjería (col 0, filas 6-7)
+        m[0][6] = 28; m[0][7] = 27;
         // Puertas de salida a entrada (fila 14)
-        m[2][14] = 5; m[3][14] = 5;
-        m[17][14] = 5; m[18][14] = 5;
+        m[2][14] = 5; m[3][14] = 26;
+        m[17][14] = 5; m[18][14] = 26;
         return m;
     }
 
@@ -197,17 +272,29 @@ public class GamePanel extends JPanel implements KeyListener {
         for (int c = 0; c < MAP_COLS; c++)
             for (int r = 0; r < MAP_ROWS; r++) m[c][r] = 12; // suelo madera
 
-        for (int c = 0; c < MAP_COLS; c++) { m[c][0] = 13; m[c][1] = 13; } // paredes
-        // Menú del comedor (fila 1, cols 2-4)
-        m[2][1] = 16; m[3][1] = 16; m[4][1] = 16;
-        // Notas/Trabajos (fila 1, cols 16-18)
-        m[16][1] = 17; m[17][1] = 17; m[18][1] = 17;
-        // Mostrador (filas 7-8, cols 5-15)
-        for (int c = 5; c <= 15; c++) { m[c][7] = 18; m[c][8] = 18; }
-        // Archivadores (filas 11-14, cols 1,3,5)
-        for (int r = 11; r <= 14; r++) { m[1][r] = 14; m[3][r] = 14; m[5][r] = 14; }
-        // Puerta derecha a recepción (col 20, filas 5-8)
-        m[20][5] = 5; m[20][6] = 5; m[20][7] = 5; m[20][8] = 5;
+        for (int c = 0; c < MAP_COLS; c++) { m[c][0] = 13; m[c][1] = 13; } // paredes superiores
+        // Bordes laterales (col 0 izquierda, col 20 derecha) filas 2-14
+        for (int r = 2; r <= 14; r++) m[0][r] = 13;
+        for (int r = 2; r <= 5;  r++) m[20][r] = 13;
+        for (int r = 8; r <= 14; r++) m[20][r] = 13;
+        // Borde inferior (fila 14) cols 1-19
+        for (int c = 1; c <= 19; c++) m[c][14] = 13;
+        // Menú del comedor (fila 1, cols 2-3)
+        m[2][1] = 16; m[3][1] = 16;
+        // Notas/Trabajos (fila 1, cols 16-17)
+        m[16][1] = 17; m[17][1] = 17;
+        // Trabajo (fila 1, cols 10-11 — separado 1 tile a la izquierda de Temario)
+        m[10][1] = 33; m[11][1] = 33;
+        // Temario (fila 1, cols 13-14 — separado 1 tile a la izquierda de Notas)
+        m[13][1] = 32; m[14][1] = 32;
+        // Mesas comedor: 4 grupos de 2 filas × 6 cols, simétricos
+        int[][] grupos = {{2,5},{11,5},{2,9},{11,9}};
+        for (int[] g : grupos)
+            for (int c = g[0]; c <= g[0]+5; c++)
+                for (int r = g[1]; r <= g[1]+1; r++)
+                    m[c][r] = 18;
+        // Puerta derecha a recepción (col 20, filas 6-7)
+        m[20][6] = 28; m[20][7] = 27;
         return m;
     }
 
@@ -228,9 +315,14 @@ public class GamePanel extends JPanel implements KeyListener {
         drawOtherPlayers(g2);
         drawLocalPlayer(g2);
 
-        if (currentZone.equals("entrada")) drawEntradaText(g2);
-        else drawInteractionHint(g2);
+        if (currentZone.equals("entrada")) {
+            drawEntradaText(g2);
+            if (!primerLogin) TutorialNPC.drawDecorative(g2, TILE_SIZE);
+        } else drawInteractionHint(g2);
+        drawDoorHint(g2);
         drawRecepcionWalls(g2);
+
+        if (tutorialNPC != null) tutorialNPC.draw(g2, TILE_SIZE);
 
         drawChatOverlay(g2);
 
@@ -272,7 +364,7 @@ public class GamePanel extends JPanel implements KeyListener {
     private void drawTile(Graphics2D g, int x, int y, int tile) {
         int s = TILE_SIZE;
         switch (tile) {
-            case 5: // Puerta
+            case 5: // Puerta (manija derecha)
                 g.setColor(new Color(92, 58, 33));
                 g.fillRect(x, y, s, s);
                 g.setColor(new Color(61, 37, 20));
@@ -281,6 +373,97 @@ public class GamePanel extends JPanel implements KeyListener {
                 g.setColor(new Color(209, 161, 58));
                 g.fillOval(x+s-10, y+s/2-3, 6, 6);
                 break;
+            case 26: // Puerta volteada en Y (manija izquierda)
+                g.setColor(new Color(92, 58, 33));
+                g.fillRect(x, y, s, s);
+                g.setColor(new Color(61, 37, 20));
+                g.setStroke(new BasicStroke(2));
+                g.drawRect(x+3, y+3, s-6, s-6);
+                g.setColor(new Color(209, 161, 58));
+                g.fillOval(x+4, y+s/2-3, 6, 6);
+                break;
+            case 27: // Puerta rotada 90° horario (manija arriba)
+                g.setColor(new Color(92, 58, 33));
+                g.fillRect(x, y, s, s);
+                g.setColor(new Color(61, 37, 20));
+                g.setStroke(new BasicStroke(2));
+                g.drawRect(x+3, y+3, s-6, s-6);
+                g.setColor(new Color(209, 161, 58));
+                g.fillOval(x+s/2-3, y+4, 6, 6);
+                break;
+            case 28: // Puerta rotada 90° antihorario (manija abajo)
+                g.setColor(new Color(92, 58, 33));
+                g.fillRect(x, y, s, s);
+                g.setColor(new Color(61, 37, 20));
+                g.setStroke(new BasicStroke(2));
+                g.drawRect(x+3, y+3, s-6, s-6);
+                g.setColor(new Color(209, 161, 58));
+                g.fillOval(x+s/2-3, y+s-10, 6, 6);
+                break;
+            case 29: // Escalón (fila alta, más claro)
+                g.setColor(new Color(190, 190, 190));
+                g.fillRect(x, y, s, s/2);
+                g.setColor(new Color(110, 110, 110));
+                g.fillRect(x, y+s/2, s, s/2);
+                break;
+            case 30: // Escalón (fila media, más oscuro)
+                g.setColor(new Color(140, 140, 140));
+                g.fillRect(x, y, s, s/2);
+                g.setColor(new Color(75, 75, 75));
+                g.fillRect(x, y+s/2, s, s/2);
+                break;
+            case 31: // Escalón (fila baja, más oscuro aún)
+                g.setColor(new Color(90, 90, 90));
+                g.fillRect(x, y, s, s/2);
+                g.setColor(new Color(40, 40, 40));
+                g.fillRect(x, y+s/2, s, s/2);
+                break;
+            case 33: { // Trabajo — tablón con folios/entregas
+                g.setColor(new Color(30, 55, 35));
+                g.fillRect(x, y, s, s);
+                // Marco del tablón
+                g.setColor(new Color(110, 75, 40));
+                g.fillRect(x+2, y+2, s-4, s-4);
+                g.setColor(new Color(160, 110, 60));
+                g.drawRect(x+2, y+2, s-4, s-4);
+                // Folios
+                int[][] folios = {{6,6,12,14},{20,6,12,14},{6,22,12,14},{20,22,12,14}};
+                Color[] fColores = {Color.WHITE, new Color(255,255,180), Color.WHITE, new Color(220,240,255)};
+                for (int i=0; i<folios.length; i++) {
+                    g.setColor(fColores[i]);
+                    g.fillRect(x+folios[i][0], y+folios[i][1], folios[i][2], folios[i][3]);
+                    g.setColor(new Color(180,180,180));
+                    g.drawLine(x+folios[i][0]+2, y+folios[i][1]+4,  x+folios[i][0]+folios[i][2]-2, y+folios[i][1]+4);
+                    g.drawLine(x+folios[i][0]+2, y+folios[i][1]+7,  x+folios[i][0]+folios[i][2]-2, y+folios[i][1]+7);
+                    g.drawLine(x+folios[i][0]+2, y+folios[i][1]+10, x+folios[i][0]+folios[i][2]-2, y+folios[i][1]+10);
+                }
+                g.setFont(new Font("SansSerif", Font.BOLD, 6));
+                g.setColor(new Color(200,230,200));
+                g.drawString("TAREAS", x+4, y+s-4);
+                break;
+            }
+            case 32: { // Temario — estantería con carpetas
+                g.setColor(new Color(45, 30, 80));
+                g.fillRect(x, y, s, s);
+                // Estantes
+                g.setColor(new Color(80, 55, 120));
+                g.fillRect(x+2, y+s-6, s-4, 4);
+                g.fillRect(x+2, y+s/2-2, s-4, 4);
+                // Carpetas
+                int[] cw = {7, 6, 7, 6}; int[] ch = {14, 12, 13, 11};
+                Color[] cc = {new Color(220,80,80), new Color(80,160,220), new Color(80,200,120), new Color(230,180,60)};
+                int cx2 = x + 3;
+                for (int i = 0; i < 4; i++) {
+                    g.setColor(cc[i]); g.fillRect(cx2, y+s/2-ch[i]-2, cw[i], ch[i]);
+                    g.setColor(cc[i].darker()); g.fillRect(cx2, y+s/2-ch[i]-2, cw[i], 3);
+                    cx2 += cw[i] + 2;
+                }
+                // Label "PDF"
+                g.setFont(new Font("SansSerif", Font.BOLD, 7));
+                g.setColor(new Color(200, 180, 255));
+                g.drawString("PDF", x+s/2-8, y+s-8);
+                break;
+            }
             case 8: // Suelo recepción (tablero de ajedrez)
                 g.setColor(((x/s + y/s) % 2 == 0) ? new Color(224,224,224) : new Color(245,245,245));
                 g.fillRect(x, y, s, s);
@@ -288,8 +471,6 @@ public class GamePanel extends JPanel implements KeyListener {
             case 9: // Pared recepción
                 g.setColor(new Color(74, 107, 140));
                 g.fillRect(x, y, s, s);
-                g.setColor(new Color(58, 84, 110));
-                g.fillRect(x, y+s-6, s, 6);
                 break;
             case 10: // Tablón de anuncios
                 g.setColor(new Color(74, 107, 140));
@@ -323,8 +504,6 @@ public class GamePanel extends JPanel implements KeyListener {
             case 13: // Pared conserjería
                 g.setColor(new Color(92, 69, 48));
                 g.fillRect(x, y, s, s);
-                g.setColor(new Color(69, 50, 33));
-                g.fillRect(x, y+s-6, s, 6);
                 break;
             case 14: // Archivador
                 g.setColor(new Color(140, 98, 57));
@@ -371,13 +550,13 @@ public class GamePanel extends JPanel implements KeyListener {
                 g.fillOval(x+11, y+7, 4, 4);
                 g.fillOval(x+23, y+11, 4, 4);
                 break;
-            case 18: // Mostrador conserjería
-                g.setColor(new Color(140, 98, 57));
+            case 18: // Mesa comedor (metal)
+                g.setColor(new Color(125, 127, 133));
                 g.fillRect(x, y, s, s);
-                g.setColor(new Color(74, 51, 32));
-                g.fillRect(x+3, y+5, s-6, s-10);
-                g.setColor(new Color(56, 37, 22));
-                g.fillRect(x+3, y+5, s-6, 5);
+                g.setColor(new Color(195, 197, 202));
+                g.fillRect(x+3, y+3, s-6, s-6);
+                g.setColor(new Color(215, 217, 220));
+                g.fillRect(x+4, y+4, s-12, s-12);
                 break;
             case 19: { // Hormigón / Acera
                 int cx19 = x / s, cy19 = y / s;
@@ -536,12 +715,15 @@ public class GamePanel extends JPanel implements KeyListener {
 
     private void drawRecepcionWalls(Graphics2D g) {
         if (!currentZone.equals("recepcion")) return;
-        int top = 12 * TILE_SIZE;
-        int bot = MAP_ROWS * TILE_SIZE;
-        g.setColor(new Color(220, 50, 50));
-        g.setStroke(new BasicStroke(3));
-        g.drawLine(6  * TILE_SIZE, top, 6  * TILE_SIZE, bot); // izquierda
-        g.drawLine(15 * TILE_SIZE, top, 15 * TILE_SIZE, bot); // derecha
+        int x1 = 6  * TILE_SIZE;   // borde izquierdo de las escaleras
+        int x2 = 15 * TILE_SIZE;   // borde derecho de las escaleras
+        int y1 = 12 * TILE_SIZE;   // fila donde empieza la barrera
+        int y2 = MAP_ROWS * TILE_SIZE;
+        g.setStroke(new java.awt.BasicStroke(2f));
+        g.setColor(new Color(100, 100, 100, 200));
+        g.drawLine(x1, y1, x1, y2);
+        g.drawLine(x2, y1, x2, y2);
+        g.setStroke(new java.awt.BasicStroke(1f));
     }
 
     // ── Pistas de interacción ─────────────────────────────────────────
@@ -559,6 +741,10 @@ public class GamePanel extends JPanel implements KeyListener {
                 label = "Menú del Comedor  [E]"; break;
             case "notas":
                 label = "profesor".equals(myRol) ? "Poner nota a alumno  [E]" : "Notas y Calificaciones  [E]"; break;
+            case "trabajo":
+                label = "profesor".equals(myRol) ? "Trabajos — Gestionar  [E]" : "Trabajos — Entregar  [E]"; break;
+            case "temario":
+                label = "profesor".equals(myRol) ? "Temario — Gestionar  [E]" : "Temario — Descargar  [E]"; break;
             default: return;
         }
         g.setFont(new Font("SansSerif", Font.BOLD, 13));
@@ -569,6 +755,28 @@ public class GamePanel extends JPanel implements KeyListener {
         g.setColor(new Color(0, 0, 0, 180));
         g.fillRoundRect(tx, ty - fm.getAscent() - 4, tw, fm.getHeight() + 8, 8, 8);
         g.setColor(new Color(255, 230, 100));
+        g.drawString(label, tx + 8, ty);
+    }
+
+    private void drawDoorHint(Graphics2D g) {
+        String dest = getDoorTransition();
+        if (dest == null) return;
+        String name;
+        switch (dest) {
+            case "recepcion":    name = "Recepción";  break;
+            case "entrada":      name = "Salida";      break;
+            case "conserjeria":  name = "Comedor";     break;
+            default:             name = dest;
+        }
+        String label = "Puerta → " + name + "  [Enter]";
+        g.setFont(new Font("SansSerif", Font.BOLD, 13));
+        FontMetrics fm = g.getFontMetrics();
+        int tw = fm.stringWidth(label) + 16;
+        int tx = W / 2 - tw / 2;
+        int ty = H - TILE_SIZE;
+        g.setColor(new Color(0, 0, 0, 180));
+        g.fillRoundRect(tx, ty - fm.getAscent() - 4, tw, fm.getHeight() + 8, 8, 8);
+        g.setColor(new Color(100, 220, 255));
         g.drawString(label, tx + 8, ty);
     }
 
@@ -645,44 +853,251 @@ public class GamePanel extends JPanel implements KeyListener {
     // ── Chat overlay ──────────────────────────────────────────────────
 
     private void drawChatOverlay(Graphics2D g) {
-        // Panel de historial
-        int panelX = 6, panelY = H + 4;
-        int panelW = W - 12, panelH = 50;
-        g.setColor(new Color(0, 0, 0, 180));
-        g.fillRoundRect(panelX, panelY, panelW, panelH, 8, 8);
+        final int CHAT_W  = 280;
+        final int MARGIN  = 10;
+        final int TAB_H   = 22;
+        final int MSG_H   = 148;
+        final int INPUT_H = 28;
+        final int PAD     = 6;
+        final int chatX   = W - CHAT_W - MARGIN;
+        final int chatBot = H - MARGIN;
 
-        g.setFont(new Font("SansSerif", Font.PLAIN, 11));
-        FontMetrics fm = g.getFontMetrics();
-        int lineH = fm.getHeight();
-        int maxLines = (panelH - 4) / lineH;
+        Font msgFont  = new Font("SansSerif", Font.PLAIN, 11);
+        Font nameFont = new Font("SansSerif", Font.BOLD, 10);
+        Font tabFont  = new Font("SansSerif", Font.PLAIN, 10);
+        Font tabFontB = new Font("SansSerif", Font.BOLD, 10);
 
-        int start = Math.max(0, chatMessages.size() - maxLines);
-        int lineY = panelY + fm.getAscent() + 4;
-        for (int i = start; i < chatMessages.size(); i++) {
-            String[] m = chatMessages.get(i);
-            Color c = parseColor(m[1]);
-            g.setColor(c);
-            String full = "[" + m[0] + "] " + m[2];
-            g.drawString(full, panelX + 6, lineY);
-            lineY += lineH;
+        // ── Chat oculto ───────────────────────────────────────────────────
+        if (!chatVisible) {
+            int tw = 72, th = TAB_H;
+            int tx = W - tw - MARGIN, ty = chatBot - th;
+            chatToggleBtn.setBounds(tx, ty, tw, th);
+            g.setColor(new Color(12, 15, 30, 215));
+            g.fillRoundRect(tx, ty, tw, th, 6, 6);
+            g.setColor(new Color(60, 90, 140));
+            g.setStroke(new BasicStroke(1f));
+            g.drawRoundRect(tx, ty, tw, th, 6, 6);
+            g.setFont(tabFontB);
+            FontMetrics fh = g.getFontMetrics();
+            g.setColor(new Color(150, 185, 230));
+            String lbl = "Chat  ▲";
+            g.drawString(lbl, tx + (tw - fh.stringWidth(lbl)) / 2,
+                         ty + (th + fh.getAscent() - fh.getDescent()) / 2);
+            return;
         }
 
-        // Input de chat
+        // ── Fondo del panel ───────────────────────────────────────────────
+        int inputExtra = chatActive ? INPUT_H + 4 : 0;
+        int panelH = TAB_H + 1 + MSG_H + 4 + inputExtra;
+        int panelY = chatBot - panelH;
+
+        g.setColor(new Color(12, 15, 30, 215));
+        g.fillRoundRect(chatX, panelY, CHAT_W, panelH, 10, 10);
+        g.setColor(new Color(60, 90, 140));
+        g.setStroke(new BasicStroke(1f));
+        g.drawRoundRect(chatX, panelY, CHAT_W, panelH, 10, 10);
+
+        // ── Fila de pestañas ──────────────────────────────────────────────
+        // Botón ▼ (esquina derecha del panel)
+        int btnW = 22, btnH = 14;
+        int btnX = chatX + CHAT_W - btnW - 4;
+        int btnY = panelY + (TAB_H - btnH) / 2;
+        chatToggleBtn.setBounds(btnX, btnY, btnW, btnH);
+        g.setColor(new Color(40, 60, 100, 190));
+        g.fillRoundRect(btnX, btnY, btnW, btnH, 3, 3);
+        g.setColor(new Color(80, 120, 180));
+        g.drawRoundRect(btnX, btnY, btnW, btnH, 3, 3);
+        g.setFont(tabFontB);
+        FontMetrics fb = g.getFontMetrics();
+        g.setColor(new Color(180, 210, 245));
+        g.drawString("▼", btnX + (btnW - fb.stringWidth("▼")) / 2,
+                     btnY + (btnH + fb.getAscent() - fb.getDescent()) / 2);
+
+        // Pestaña Global + pestañas PM
+        int tabX = chatX + 2;
+        int tabsMaxX = btnX - 3;
+        g.setFont(tabFont);
+        FontMetrics ft = g.getFontMetrics();
+
+        // Global
+        boolean globalActive = (activePmIdx == -1);
+        int globalW = ft.stringWidth("Global") + PAD * 2;
+        drawTab(g, tabX, panelY + 3, globalW, TAB_H - 4, "Global", globalActive, false, ft, tabFont, tabFontB);
+        globalTabRect.setBounds(tabX, panelY, globalW, TAB_H);
+        tabX += globalW + 2;
+
+        // PM tabs
+        pmTabRects.clear();
+        pmCloseRects.clear();
+        synchronized (pmChats) {
+            for (int i = 0; i < pmChats.size(); i++) {
+                if (tabX >= tabsMaxX - 30) break;
+                PmChat pm = pmChats.get(i);
+                boolean pmActive = (activePmIdx == i);
+                String label = pm.name.length() > 9 ? pm.name.substring(0, 8) + "…" : pm.name;
+                final int CLOSE_W = 10;
+                int tabW = Math.min(ft.stringWidth(label) + PAD * 2 + CLOSE_W + 4, tabsMaxX - tabX);
+                if (tabW < 28) break;
+                drawTab(g, tabX, panelY + 3, tabW, TAB_H - 4, label, pmActive, pm.hasUnread, ft, tabFont, tabFontB);
+                // ✕
+                int cx = tabX + tabW - CLOSE_W - 3, cy = panelY + (TAB_H - CLOSE_W) / 2;
+                g.setColor(pmActive ? new Color(200, 100, 100) : new Color(140, 100, 100));
+                g.setFont(tabFontB);
+                g.drawString("✕", cx + 1, cy + fb.getAscent() - 1);
+                pmTabRects.add(new Rectangle(tabX, panelY, tabW, TAB_H));
+                pmCloseRects.add(new Rectangle(cx, cy, CLOSE_W + 2, CLOSE_W + 2));
+                tabX += tabW + 2;
+            }
+        }
+
+        // Separador bajo pestañas
+        g.setColor(new Color(60, 90, 140));
+        g.drawLine(chatX + 1, panelY + TAB_H, chatX + CHAT_W - 1, panelY + TAB_H);
+
+        // ── Input ─────────────────────────────────────────────────────────
+        int inputTop = chatBot;
         if (chatActive) {
-            g.setColor(new Color(20, 20, 50, 220));
-            g.fillRoundRect(panelX, panelY - 28, panelW, 24, 6, 6);
+            inputTop = chatBot - INPUT_H;
+            // Hint del destinatario
+            String hint = activePmIdx >= 0 && activePmIdx < pmChats.size()
+                ? "→ " + pmChats.get(activePmIdx).name : "Global";
+            g.setFont(new Font("SansSerif", Font.ITALIC, 10));
+            g.setColor(new Color(120, 160, 210));
+            g.drawString(hint, chatX + 8, inputTop - 3);
+            g.setColor(new Color(20, 20, 50, 230));
+            g.fillRoundRect(chatX + 4, inputTop, CHAT_W - 8, INPUT_H, 6, 6);
             g.setColor(new Color(74, 144, 217));
-            g.setStroke(new BasicStroke(1));
-            g.drawRoundRect(panelX, panelY - 28, panelW, 24, 6, 6);
-            g.setColor(Color.WHITE);
+            g.setStroke(new BasicStroke(1f));
+            g.drawRoundRect(chatX + 4, inputTop, CHAT_W - 8, INPUT_H, 6, 6);
             g.setFont(new Font("SansSerif", Font.PLAIN, 12));
-            String txt = "T: " + chatInput.toString() + (System.currentTimeMillis() % 1000 < 500 ? "|" : "");
-            g.drawString(txt, panelX + 8, panelY - 28 + 16);
-        } else {
-            g.setColor(new Color(120, 140, 180));
-            g.setFont(new Font("SansSerif", Font.PLAIN, 10));
-            g.drawString("T = Chat   E = Interactuar   Enter = Entrar", panelX + 8, panelY - 6);
+            FontMetrics fi = g.getFontMetrics();
+            g.setColor(Color.WHITE);
+            String txt = chatInput.toString() + (System.currentTimeMillis() % 1000 < 500 ? "|" : "");
+            g.drawString(txt, chatX + 12, inputTop + (INPUT_H + fi.getAscent() - fi.getDescent()) / 2);
         }
+
+        // ── Mensajes con clipping ─────────────────────────────────────────
+        int msgBot = inputTop - (chatActive ? 14 : 0);
+        int msgTop = panelY + TAB_H + 4;
+        if (msgBot <= msgTop) return;
+
+        Shape oldClip = g.getClip();
+        g.clipRect(chatX + 2, msgTop, CHAT_W - 4, msgBot - msgTop);
+
+        g.setFont(msgFont);
+        FontMetrics fm = g.getFontMetrics();
+        int lineH   = fm.getHeight();
+        int maxTxtW = CHAT_W - PAD * 4;
+
+        if (activePmIdx >= 0 && activePmIdx < pmChats.size()) {
+            // ── Mensajes privados ─────────────────────────────────────────
+            PmChat pm = pmChats.get(activePmIdx);
+            synchronized (pmChats) {
+                int curY = msgBot;
+                for (int i = pm.messages.size() - 1; i >= 0; i--) {
+                    String[] entry = pm.messages.get(i);
+                    boolean isOwn  = "1".equals(entry[0]);
+                    drawBubble(g, entry[1], isOwn, isOwn ? myName : pm.name,
+                               isOwn ? myColor : pm.color,
+                               chatX, curY, msgTop, CHAT_W, PAD, lineH, maxTxtW, fm, nameFont);
+                    List<String> lines = wrapText(entry[1], fm, maxTxtW);
+                    int nameExtra = isOwn ? 0 : lineH;
+                    curY -= PAD * 2 + nameExtra + lines.size() * lineH + 4;
+                    if (curY + lineH < msgTop) break;
+                }
+            }
+        } else {
+            // ── Chat global ───────────────────────────────────────────────
+            synchronized (chatMessages) {
+                int curY = msgBot;
+                for (int i = chatMessages.size() - 1; i >= 0; i--) {
+                    String[] entry = chatMessages.get(i);
+                    boolean  isOwn = entry[0].equals(myName);
+                    drawBubble(g, entry[2], isOwn, entry[0], parseColor(entry[1]),
+                               chatX, curY, msgTop, CHAT_W, PAD, lineH, maxTxtW, fm, nameFont);
+                    List<String> lines = wrapText(entry[2], fm, maxTxtW);
+                    int nameExtra = isOwn ? 0 : lineH;
+                    curY -= PAD * 2 + nameExtra + lines.size() * lineH + 4;
+                    if (curY + lineH < msgTop) break;
+                }
+            }
+        }
+        g.setClip(oldClip);
+    }
+
+    private void drawTab(Graphics2D g, int x, int y, int w, int h,
+                         String label, boolean active, boolean unread,
+                         FontMetrics ft, Font normal, Font bold) {
+        g.setColor(active ? new Color(35, 65, 125, 230) : new Color(20, 25, 55, 180));
+        g.fillRoundRect(x, y, w, h, 5, 5);
+        if (active) {
+            g.setColor(new Color(74, 120, 200));
+            g.setStroke(new BasicStroke(1f));
+            g.drawRoundRect(x, y, w, h, 5, 5);
+        }
+        g.setFont(unread ? bold : normal);
+        FontMetrics fm = g.getFontMetrics();
+        g.setColor(active ? Color.WHITE : (unread ? new Color(255, 200, 80) : new Color(160, 190, 220)));
+        g.drawString(label, x + 5, y + (h + fm.getAscent() - fm.getDescent()) / 2);
+    }
+
+    private void drawBubble(Graphics2D g, String text, boolean isOwn, String authorName,
+                            Color authorColor, int chatX, int curY, int msgTop,
+                            int chatW, int pad, int lineH, int maxTxtW,
+                            FontMetrics fm, Font nameFont) {
+        List<String> lines = wrapText(text, fm, maxTxtW);
+        int nameExtra = isOwn ? 0 : lineH;
+        int bubbleH   = pad * 2 + nameExtra + lines.size() * lineH;
+        int textW = 0;
+        for (String l : lines) textW = Math.max(textW, fm.stringWidth(l));
+        if (!isOwn) {
+            g.setFont(nameFont);
+            textW = Math.max(textW, g.getFontMetrics().stringWidth(authorName));
+            g.setFont(fm.getFont());
+        }
+        int bubbleW = Math.min(textW + pad * 2, chatW - 4);
+        int bubbleY = curY - bubbleH;
+
+        if (isOwn) {
+            int bx = chatX + chatW - bubbleW - 2;
+            g.setColor(new Color(40, 80, 150, 210));
+            g.fillRoundRect(bx, bubbleY, bubbleW, bubbleH, 10, 10);
+            g.setFont(fm.getFont());
+            g.setColor(Color.WHITE);
+            int ty = bubbleY + pad + fm.getAscent();
+            for (String line : lines) { g.drawString(line, bx + pad, ty); ty += lineH; }
+        } else {
+            int bx = chatX + 2;
+            g.setColor(new Color(30, 35, 60, 210));
+            g.fillRoundRect(bx, bubbleY, bubbleW, bubbleH, 10, 10);
+            g.setFont(nameFont);
+            FontMetrics fnm = g.getFontMetrics();
+            g.setColor(authorColor);
+            g.drawString(authorName, bx + pad, bubbleY + pad + fnm.getAscent());
+            g.setFont(fm.getFont());
+            g.setColor(new Color(220, 230, 245));
+            int ty = bubbleY + pad + lineH + fm.getAscent();
+            for (String line : lines) { g.drawString(line, bx + pad, ty); ty += lineH; }
+        }
+    }
+
+    private List<String> wrapText(String text, FontMetrics fm, int maxW) {
+        List<String> result = new ArrayList<>();
+        if (text == null || text.isEmpty()) { result.add(""); return result; }
+        String[] words = text.split(" ", -1);
+        StringBuilder cur = new StringBuilder();
+        for (String word : words) {
+            String test = cur.length() == 0 ? word : cur + " " + word;
+            if (fm.stringWidth(test) <= maxW) {
+                cur = new StringBuilder(test);
+            } else {
+                if (cur.length() > 0) result.add(cur.toString());
+                cur = new StringBuilder(word);
+            }
+        }
+        if (cur.length() > 0) result.add(cur.toString());
+        if (result.isEmpty()) result.add("");
+        return result;
     }
 
     // ── Gestión de mensajes del servidor ──────────────────────────────
@@ -724,6 +1139,7 @@ public class GamePanel extends JPanel implements KeyListener {
                     playerX = Integer.parseInt(p[2]);
                     playerY = Integer.parseInt(p[3]);
                     otherPlayers.clear();
+                    if (tutorialNPC != null) tutorialNPC.onZoneChanged(currentZone);
                 }
                 break;
             case "CHAT_MSG":
@@ -736,17 +1152,36 @@ public class GamePanel extends JPanel implements KeyListener {
                     }
                 }
                 break;
+            case "PM_OPENED":
+                // PM_OPENED|fromName|fromColor
+                if (p.length >= 3) {
+                    final String pmFrom = p[1]; final Color pmColor = parseColor(p[2]);
+                    SwingUtilities.invokeLater(() -> { openPmTab(pmFrom, pmColor); chatVisible = true; repaint(); });
+                }
+                break;
+            case "PM_RECV":
+                // PM_RECV|fromName|fromColor|message
+                if (p.length >= 4) {
+                    final String pmSender = p[1]; final Color pmSenderColor = parseColor(p[2]);
+                    final String pmTxt = msg.substring(p[0].length()+p[1].length()+p[2].length()+3);
+                    SwingUtilities.invokeLater(() -> addPmMessage(pmSender, pmSenderColor, pmTxt));
+                }
+                break;
             case "DATA_TABLON":
                 showData("tablon", msg.substring("DATA_TABLON|".length()));
+                if (tutorialNPC != null) tutorialNPC.onInteracted("tablon");
                 break;
             case "DATA_HORARIO":
                 showData("horario", msg.substring("DATA_HORARIO|".length()));
+                if (tutorialNPC != null) tutorialNPC.onInteracted("horario");
                 break;
             case "DATA_MENU_COMEDOR":
                 showData("menu_comedor", msg.substring("DATA_MENU_COMEDOR|".length()));
+                if (tutorialNPC != null) tutorialNPC.onInteracted("menu_comedor");
                 break;
             case "DATA_NOTAS":
                 showData("notas", msg.substring("DATA_NOTAS|".length()));
+                if (tutorialNPC != null) tutorialNPC.onInteracted("notas");
                 break;
             case "DATA_ALUMNOS":
                 showProfesorNotas(msg.substring("DATA_ALUMNOS|".length()));
@@ -757,6 +1192,143 @@ public class GamePanel extends JPanel implements KeyListener {
             case "PROF_ERR":
                 showNotif(p.length >= 2 ? p[1] : "Error", true);
                 break;
+            case "TRABAJO_DATA": {
+                // TRABAJO_DATA|myCurso|cursosDisp|trabajos<<STUDENTS>>students<<ENTREGAS>>entregas
+                if (p.length >= 4) {
+                    final String myCurso    = p[1];
+                    final String cursosDisp = p[2];
+                    final String rest = msg.substring(p[0].length()+p[1].length()+p[2].length()+3);
+                    int s1 = rest.indexOf("<<STUDENTS>>"), s2 = rest.indexOf("<<ENTREGAS>>");
+                    final String trabajos = s1 >= 0 ? rest.substring(0, s1) : rest;
+                    final String students = (s1 >= 0 && s2 > s1) ? rest.substring(s1+12, s2) : "";
+                    final String entregas = s2 >= 0 ? rest.substring(s2+12) : "";
+                    SwingUtilities.invokeLater(() -> {
+                        JFrame parent = (JFrame) SwingUtilities.getWindowAncestor(this);
+                        trabajoDialog = new TrabajoDialog(parent, client, myRol, myCurso, myUserId, cursosDisp, trabajos, students, entregas);
+                        trabajoDialog.setVisible(true);
+                    });
+                }
+                break;
+            }
+            case "TRABAJO_FILE": {
+                if (p.length >= 3) {
+                    final String nombre = p[1];
+                    final String b64 = msg.substring(p[0].length()+p[1].length()+2);
+                    SwingUtilities.invokeLater(() -> { if (trabajoDialog != null) trabajoDialog.receiveFile(nombre, b64); });
+                }
+                break;
+            }
+            case "TRABAJO_OK": {
+                final String okData = msg;
+                SwingUtilities.invokeLater(() -> { if (trabajoDialog != null) trabajoDialog.handleOk(okData); });
+                break;
+            }
+            case "TRABAJO_ERR": {
+                final String errMsg = p.length >= 2 ? p[1] : "Error";
+                SwingUtilities.invokeLater(() -> { if (trabajoDialog != null) trabajoDialog.handleErr(errMsg); });
+                break;
+            }
+            case "TEMARIO_DATA": {
+                // TEMARIO_DATA|myCurso|cursosDisp|carpetasSerial<<DOCS>>docsSerial
+                if (p.length >= 4) {
+                    final String myCurso   = p[1];
+                    final String cursosDisp = p[2];
+                    final String rest = msg.substring(p[0].length()+p[1].length()+p[2].length()+3);
+                    int sep = rest.indexOf("<<DOCS>>");
+                    final String carpetas = sep >= 0 ? rest.substring(0, sep) : rest;
+                    final String docs     = sep >= 0 ? rest.substring(sep + 8) : "";
+                    SwingUtilities.invokeLater(() -> {
+                        JFrame parent = (JFrame) SwingUtilities.getWindowAncestor(this);
+                        temarioDialog = new TemarioDialog(parent, client, myRol, myCurso, cursosDisp, carpetas, docs);
+                        temarioDialog.setVisible(true);
+                    });
+                }
+                break;
+            }
+            case "TEMARIO_FILE": {
+                // TEMARIO_FILE|nombre|base64data
+                if (p.length >= 3) {
+                    final String nombre = p[1];
+                    final String b64 = msg.substring(p[0].length()+p[1].length()+2);
+                    SwingUtilities.invokeLater(() -> { if (temarioDialog != null) temarioDialog.receiveFile(nombre, b64); });
+                }
+                break;
+            }
+            case "TEMARIO_OK": {
+                final String okData = msg;
+                SwingUtilities.invokeLater(() -> { if (temarioDialog != null) temarioDialog.handleOk(okData); });
+                break;
+            }
+            case "TEMARIO_ERR": {
+                final String errMsg = p.length >= 2 ? p[1] : "Error";
+                SwingUtilities.invokeLater(() -> { if (temarioDialog != null) temarioDialog.handleErr(errMsg); });
+                break;
+            }
+        }
+    }
+
+    // ── Callbacks del tutorial NPC ────────────────────────────────────
+    public void onTutorialComplete() {
+        primerLogin  = false;
+        tutorialNPC  = null;
+        client.sendMessage("TUTORIAL_DONE");
+        repaint();
+    }
+
+    public void openFakePM(String name) {
+        synchronized (pmChats) {
+            for (int i = 0; i < pmChats.size(); i++) {
+                if (pmChats.get(i).isFake) { activePmIdx = i; chatVisible = true; repaint(); return; }
+            }
+            PmChat pm = new PmChat(name, new Color(255, 225, 60));
+            pm.isFake = true;
+            pmChats.add(pm);
+            activePmIdx = pmChats.size() - 1;
+        }
+        chatVisible = true;
+        repaint();
+    }
+
+    public void addFakePMMessage(String text) {
+        synchronized (pmChats) {
+            for (PmChat pm : pmChats) {
+                if (pm.isFake) {
+                    pm.messages.add(new String[]{"0", text});
+                    pm.hasUnread = (activePmIdx < 0 || pmChats.get(activePmIdx) != pm);
+                    break;
+                }
+            }
+        }
+        repaint();
+    }
+
+    private void openPmTab(String name, Color color) {
+        synchronized (pmChats) {
+            for (int i = 0; i < pmChats.size(); i++) {
+                if (pmChats.get(i).name.equals(name)) { activePmIdx = i; return; }
+            }
+            pmChats.add(new PmChat(name, color));
+            activePmIdx = pmChats.size() - 1;
+        }
+    }
+
+    private void addPmMessage(String fromName, Color color, String text) {
+        synchronized (pmChats) {
+            for (PmChat pm : pmChats) {
+                if (pm.name.equals(fromName)) {
+                    pm.messages.add(new String[]{"0", text});
+                    if (pm.messages.size() > 50) pm.messages.remove(0);
+                    if (activePmIdx < 0 || pmChats.get(activePmIdx) != pm) pm.hasUnread = true;
+                    repaint();
+                    return;
+                }
+            }
+            // PM no abierto aún: crearlo
+            PmChat pm = new PmChat(fromName, color);
+            pm.messages.add(new String[]{"0", text});
+            pm.hasUnread = true;
+            pmChats.add(pm);
+            repaint();
         }
     }
 
@@ -815,14 +1387,14 @@ public class GamePanel extends JPanel implements KeyListener {
                  playerX == S1_DOOR_R1 || playerX == S1_DOOR_R2))
                 return "recepcion";
         } else if (currentZone.equals("recepcion")) {
-            if (playerX == S2_LEFT_DOOR_COL && playerY >= 5 && playerY <= 8)
+            if (playerX == S2_LEFT_DOOR_COL && playerY >= 6 && playerY <= 7)
                 return "conserjeria";
             if (playerY == S2_EXIT_ROW &&
                 (playerX == S2_EXIT_L1 || playerX == S2_EXIT_L2 ||
                  playerX == S2_EXIT_R1 || playerX == S2_EXIT_R2))
                 return "entrada";
         } else if (currentZone.equals("conserjeria")) {
-            if (playerX == S3_RIGHT_DOOR_COL && playerY >= 5 && playerY <= 8)
+            if (playerX == S3_RIGHT_DOOR_COL && playerY >= 6 && playerY <= 7)
                 return "recepcion";
         }
         return null;
@@ -872,11 +1444,13 @@ public class GamePanel extends JPanel implements KeyListener {
 
     private String getNearbyInteraction() {
         if (currentZone.equals("recepcion")) {
-            if (playerY <= 3 && playerX >= 2 && playerX <= 7) return "tablon";
-            if (playerY <= 3 && playerX >= 13 && playerX <= 19) return "horario";
+            if (playerY <= 3 && playerX >= 2  && playerX <= 5)  return "tablon";
+            if (playerY <= 3 && playerX >= 14 && playerX <= 17) return "horario";
         } else if (currentZone.equals("conserjeria")) {
-            if (playerY <= 3 && playerX >= 1 && playerX <= 6)  return "menu_comedor";
-            if (playerY <= 3 && playerX >= 14 && playerX <= 20) return "notas";
+            if (playerY <= 3 && playerX >= 1  && playerX <= 4)  return "menu_comedor";
+            if (playerY <= 3 && playerX >= 15 && playerX <= 18) return "notas";
+            if (playerY <= 3 && playerX >= 9  && playerX <= 11) return "trabajo";
+            if (playerY <= 3 && playerX >= 12 && playerX <= 15) return "temario";
         }
         return null;
     }
@@ -911,8 +1485,27 @@ public class GamePanel extends JPanel implements KeyListener {
 
         if (chatActive) {
             if (code == KeyEvent.VK_ENTER) {
-                String msg = chatInput.toString().trim();
-                if (!msg.isEmpty()) client.sendMessage("CHAT|" + msg);
+                String txt = chatInput.toString().trim();
+                if (!txt.isEmpty()) {
+                    if (activePmIdx >= 0 && activePmIdx < pmChats.size()) {
+                        PmChat pm = pmChats.get(activePmIdx);
+                        if (pm.isFake) {
+                            synchronized (pmChats) {
+                                pm.messages.add(new String[]{"1", txt});
+                            }
+                            if (tutorialNPC != null) tutorialNPC.onFakePMSent();
+                        } else {
+                            client.sendMessage("PM_MSG|" + pm.name + "|" + txt);
+                            synchronized (pmChats) {
+                                pm.messages.add(new String[]{"1", txt});
+                                if (pm.messages.size() > 50) pm.messages.remove(0);
+                            }
+                        }
+                    } else {
+                        client.sendMessage("CHAT|" + txt);
+                        if (tutorialNPC != null) tutorialNPC.onChatSent();
+                    }
+                }
                 chatActive = false; chatInput.setLength(0);
             } else if (code == KeyEvent.VK_ESCAPE) {
                 chatActive = false; chatInput.setLength(0);
@@ -924,8 +1517,27 @@ public class GamePanel extends JPanel implements KeyListener {
 
         switch (code) {
             case KeyEvent.VK_T:
-                chatActive = true; chatInput.setLength(0);
+                if (chatVisible) { chatActive = true; chatInput.setLength(0); skipNextTyped = true; }
                 break;
+            case KeyEvent.VK_Y:
+                if (tutorialNPC != null) tutorialNPC.onYPressed(playerX, playerY);
+                break;
+            case KeyEvent.VK_R: {
+                String nearest = null; Color nearestColor = Color.WHITE; int nearestDist = 2;
+                for (Map.Entry<String, PlayerData> en : otherPlayers.entrySet()) {
+                    PlayerData pd = en.getValue();
+                    int dist = Math.max(Math.abs(playerX - pd.x), Math.abs(playerY - pd.y));
+                    if (dist <= 1 && dist < nearestDist) {
+                        nearest = en.getKey(); nearestColor = pd.color; nearestDist = dist;
+                    }
+                }
+                if (nearest != null) {
+                    client.sendMessage("PM_OPEN|" + nearest);
+                    openPmTab(nearest, nearestColor);
+                    chatVisible = true;
+                }
+                break;
+            }
             case KeyEvent.VK_ENTER: {
                 String target = getDoorTransition();
                 if (target != null) {
@@ -951,6 +1563,7 @@ public class GamePanel extends JPanel implements KeyListener {
     @Override
     public void keyTyped(KeyEvent e) {
         if (chatActive) {
+            if (skipNextTyped) { skipNextTyped = false; return; }
             char c = e.getKeyChar();
             if (c != KeyEvent.CHAR_UNDEFINED && c >= 32 && chatInput.length() < 120)
                 chatInput.append(c);

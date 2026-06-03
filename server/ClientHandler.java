@@ -22,11 +22,6 @@ public class ClientHandler implements Runnable {
         for (int x = 2; x <= 5;  x++) m[x][7] = true;
         for (int x = 8; x <= 12; x++) m[x][7] = true;
         for (int x = 15; x <= 18; x++) m[x][7] = true;
-        // Árboles decorativos (bloqueantes)
-        m[1][9]  = true; m[1][10]  = true;
-        m[19][9] = true; m[19][10] = true;
-        m[3][12] = true; m[3][13]  = true;
-        m[17][12]= true; m[17][13] = true;
         return m;
     }
 
@@ -34,9 +29,11 @@ public class ClientHandler implements Runnable {
         boolean[][] m = new boolean[MAP_COLS][MAP_ROWS];
         // filas 0-1 son paredes
         for (int x = 0; x < MAP_COLS; x++) { m[x][0] = true; m[x][1] = true; }
-        // mostrador central (filas 5-7, cols 7-13)
-        for (int x = 7; x <= 13; x++) for (int y = 5; y <= 7; y++) m[x][y] = true;
-        // Col 0 filas 5-8 = puerta a conserjería → libre
+        // Col 0 (pared azul izquierda): filas 2-5 y 8-14 bloqueadas; 6-7 = puerta libre
+        for (int y = 2; y <= 5;  y++) m[0][y] = true;
+        for (int y = 8; y <= 14; y++) m[0][y] = true;
+        // Col 20 (pared azul derecha): filas 2-14 bloqueadas
+        for (int y = 2; y <= 14; y++) m[20][y] = true;
         return m;
     }
 
@@ -44,11 +41,19 @@ public class ClientHandler implements Runnable {
         boolean[][] m = new boolean[MAP_COLS][MAP_ROWS];
         // filas 0-1 son paredes
         for (int x = 0; x < MAP_COLS; x++) { m[x][0] = true; m[x][1] = true; }
-        // mostrador (filas 7-8, cols 5-15)
-        for (int x = 5; x <= 15; x++) { m[x][7] = true; m[x][8] = true; }
-        // archivadores (filas 11-14, cols 1, 3, 5)
-        for (int y = 11; y <= 14; y++) { m[1][y] = true; m[3][y] = true; m[5][y] = true; }
-        // Col 20 filas 5-8 = puerta a recepción → libre
+        // Mesas comedor: 4 grupos 2×6
+        int[][] grupos = {{2,5},{11,5},{2,9},{11,9}};
+        for (int[] g : grupos)
+            for (int x = g[0]; x <= g[0]+5; x++)
+                for (int y = g[1]; y <= g[1]+1; y++)
+                    m[x][y] = true;
+        // Col 0 (pared izquierda): filas 2-14
+        for (int y = 2; y <= 14; y++) m[0][y] = true;
+        // Col 20 (pared derecha): filas 2-5 y 8-14; 6-7 = puerta libre
+        for (int y = 2; y <= 5;  y++) m[20][y] = true;
+        for (int y = 8; y <= 14; y++) m[20][y] = true;
+        // Fila 14 (pared inferior): cols 1-19
+        for (int x = 1; x <= 19; x++) m[x][14] = true;
         return m;
     }
 
@@ -110,18 +115,18 @@ public class ClientHandler implements Runnable {
                 if (parts.length < 3) { sendMessage("LOGIN_ERR|Formato invalido"); return; }
                 String[] u = Server.db.verifyUser(parts[1], parts[2]);
                 if (u == null) { sendMessage("LOGIN_ERR|Usuario o contrasena incorrectos"); return; }
-                loginSuccess(u[0], u[1], u[2], u[3]);
+                loginSuccess(u[0], u[1], u[2], u[3], u.length >= 5 ? u[4] : "false");
                 break;
             case "REGISTER":
                 if (parts.length < 4) { sendMessage("REGISTER_ERR|Formato invalido"); return; }
                 String[] nu = Server.db.createUser(parts[1], parts[2], parts[3]);
                 if (nu == null) { sendMessage("REGISTER_ERR|El nombre de usuario ya existe"); return; }
-                loginSuccess(nu[0], nu[1], nu[2], nu[3]);
+                loginSuccess(nu[0], nu[1], nu[2], nu[3], "true");
                 break;
         }
     }
 
-    private void loginSuccess(String id, String nombre, String color, String rol) {
+    private void loginSuccess(String id, String nombre, String color, String rol, String primerLogin) {
         playerId    = Integer.parseInt(id);
         playerName  = nombre;
         playerColor = color;
@@ -129,11 +134,11 @@ public class ClientHandler implements Runnable {
         authenticated = true;
 
         if ("admin".equals(playerRol)) {
-            sendMessage("LOGIN_OK|" + playerName + "|" + playerColor + "|admin|" + playerId + "|0|0|admin");
+            sendMessage("LOGIN_OK|" + playerName + "|" + playerColor + "|admin|" + playerId + "|0|0|admin|false");
         } else {
             Server.state.addPlayer(this, playerName, playerColor, playerRol, playerId, x, y, currentZone);
             sendMessage("LOGIN_OK|" + playerName + "|" + playerColor + "|" + playerRol
-                        + "|" + playerId + "|" + x + "|" + y + "|" + currentZone);
+                        + "|" + playerId + "|" + x + "|" + y + "|" + currentZone + "|" + primerLogin);
             for (GameState.PlayerInfo pi : Server.state.getPlayersInZone(currentZone, this))
                 sendMessage("PLAYER_JOINED|" + pi.name + "|" + pi.color
                             + "|" + pi.x + "|" + pi.y + "|" + pi.direction);
@@ -154,6 +159,16 @@ public class ClientHandler implements Runnable {
             case "CHANGE_ZONE":       if (parts.length >= 4) handleChangeZone(parts[1], parts[2], parts[3]); break;
             case "INTERACT":          if (parts.length >= 2) handleInteract(parts[1]);                        break;
             case "CHAT":              if (parts.length >= 2) handleChat(line.substring(5));                   break;
+            case "PM_OPEN":                if (parts.length >= 2) handlePmOpen(parts[1]);                           break;
+            case "PM_MSG":                 if (parts.length >= 3) handlePmMsg(parts[1], line.substring(parts[0].length()+parts[1].length()+2)); break;
+            case "TUTORIAL_DONE":          Server.db.markTutorialDone(playerId);                                          break;
+            case "TRABAJO_CREATE":         handleTrabajoCreate(line);                                                      break;
+            case "TRABAJO_SUBMIT":         handleTrabajoSubmit(line);                                                      break;
+            case "TRABAJO_DOWNLOAD":       if (parts.length >= 2) handleTrabajoDownload(Integer.parseInt(parts[1]));       break;
+            case "TRABAJO_SET_NOTA":       handleTrabajoSetNota(line);                                                     break;
+            case "TEMARIO_CREATE_FOLDER":  if (parts.length >= 4) handleTemarioCreateFolder(parts[1], parts[2], parts[3]); break;
+            case "TEMARIO_UPLOAD":         handleTemarioUpload(line); break;
+            case "TEMARIO_DOWNLOAD":       if (parts.length >= 2) handleTemarioDownload(Integer.parseInt(parts[1])); break;
             case "PROF_GET_ALUMNOS":      handleProfGetAlumnos();                                              break;
             case "PROF_ADD_NOTA":         handleProfAddNota(line);                                              break;
             case "PROF_ADD_ANUNCIO":      handleProfAddAnuncio(line);                                           break;
@@ -357,6 +372,20 @@ public class ClientHandler implements Runnable {
             case "notas":
                 data = Server.db.getNotasSerial(playerId);
                 break;
+            case "temario": {
+                String[] info = Server.db.getUserInfo(playerId);
+                String curso = info[0];
+                boolean esProf = "profesor".equals(playerRol) || "admin".equals(playerRol);
+                sendMessage("TEMARIO_DATA|" + curso + "|" + Server.db.getTemarioData(curso, esProf));
+                return;
+            }
+            case "trabajo": {
+                String[] info = Server.db.getUserInfo(playerId);
+                String curso = info[0];
+                boolean esProf = "profesor".equals(playerRol) || "admin".equals(playerRol);
+                sendMessage("TRABAJO_DATA|" + curso + "|" + Server.db.getTrabajoData(playerId, curso, esProf));
+                return;
+            }
             default: return;
         }
         sendMessage("DATA_" + type.toUpperCase() + "|" + data);
@@ -366,8 +395,93 @@ public class ClientHandler implements Runnable {
         if (message.isEmpty() || message.length() > 200) return;
         String msg = "CHAT_MSG|" + playerName + "|" + playerColor + "|" + message;
         Server.state.addChatMessage(currentZone, msg);
-        // Broadcast a TODOS en la zona (incluido el emisor para confirmación)
         Server.state.broadcastToZone(currentZone, msg, null);
+    }
+
+    private void handleTrabajoCreate(String line) {
+        if (!"profesor".equals(playerRol) && !"admin".equals(playerRol)) { sendMessage("TRABAJO_ERR|Sin permiso"); return; }
+        // TRABAJO_CREATE|nombre|descripcion|fecha|curso
+        String[] p = line.split("\\|", 5);
+        if (p.length < 5) { sendMessage("TRABAJO_ERR|Formato invalido"); return; }
+        int id = Server.db.createTrabajo(p[1], p[2], p[3], p[4], playerId);
+        if (id < 0) { sendMessage("TRABAJO_ERR|No se pudo crear el trabajo"); return; }
+        sendMessage("TRABAJO_OK|created|" + id + "|" + p[1] + "|" + p[2] + "|" + p[3] + "|" + p[4]);
+    }
+
+    private void handleTrabajoSubmit(String line) {
+        // TRABAJO_SUBMIT|trabajo_id|nombre_archivo|base64data
+        String[] p = line.split("\\|", 4);
+        if (p.length < 4) { sendMessage("TRABAJO_ERR|Formato invalido"); return; }
+        int trabajoId;
+        try { trabajoId = Integer.parseInt(p[1]); } catch (NumberFormatException e) { sendMessage("TRABAJO_ERR|ID invalido"); return; }
+        byte[] data;
+        try { data = java.util.Base64.getDecoder().decode(p[3]); }
+        catch (Exception e) { sendMessage("TRABAJO_ERR|Datos invalidos"); return; }
+        if (data.length > 10*1024*1024) { sendMessage("TRABAJO_ERR|Archivo demasiado grande (max 10 MB)"); return; }
+        int id = Server.db.submitTrabajo(trabajoId, playerId, p[2], data);
+        if (id < 0) { sendMessage("TRABAJO_ERR|No se pudo entregar el trabajo"); return; }
+        sendMessage("TRABAJO_OK|submitted|" + id + "|" + p[1] + "|" + playerId + "|" + p[2] + "|" + data.length);
+    }
+
+    private void handleTrabajoDownload(int entregaId) {
+        String[] doc = Server.db.getTrabajoEntrega(entregaId);
+        if (doc == null) { sendMessage("TRABAJO_ERR|Entrega no encontrada"); return; }
+        sendMessage("TRABAJO_FILE|" + doc[0] + "|" + doc[1]);
+    }
+
+    private void handleTrabajoSetNota(String line) {
+        if (!"profesor".equals(playerRol) && !"admin".equals(playerRol)) { sendMessage("TRABAJO_ERR|Sin permiso"); return; }
+        // TRABAJO_SET_NOTA|entrega_id|nota|comentario
+        String[] p = line.split("\\|", 4);
+        if (p.length < 3) { sendMessage("TRABAJO_ERR|Formato invalido"); return; }
+        int entregaId; double nota;
+        try { entregaId = Integer.parseInt(p[1]); nota = Double.parseDouble(p[2]); }
+        catch (NumberFormatException e) { sendMessage("TRABAJO_ERR|Valores invalidos"); return; }
+        String comentario = p.length >= 4 ? p[3] : "";
+        boolean ok = Server.db.setNotaTrabajo(entregaId, nota, comentario);
+        if (!ok) { sendMessage("TRABAJO_ERR|No se pudo guardar la nota"); return; }
+        sendMessage("TRABAJO_OK|nota|" + p[1] + "|" + p[2] + "|" + comentario);
+    }
+
+    private void handleTemarioCreateFolder(String nombre, String padreIdStr, String curso) {
+        if (!"profesor".equals(playerRol) && !"admin".equals(playerRol)) { sendMessage("TEMARIO_ERR|Sin permiso"); return; }
+        int padreId = 0;
+        try { padreId = Integer.parseInt(padreIdStr); } catch (NumberFormatException ignored) {}
+        int id = Server.db.createTemarioFolder(nombre, padreId, curso, playerId);
+        if (id < 0) { sendMessage("TEMARIO_ERR|No se pudo crear la carpeta"); return; }
+        sendMessage("TEMARIO_OK|folder|" + id + "|" + nombre + "|" + padreIdStr + "|" + curso);
+    }
+
+    private void handleTemarioUpload(String line) {
+        if (!"profesor".equals(playerRol) && !"admin".equals(playerRol)) { sendMessage("TEMARIO_ERR|Sin permiso"); return; }
+        // TEMARIO_UPLOAD|carpeta_id|nombre|curso|base64data
+        String[] p = line.split("\\|", 5);
+        if (p.length < 5) { sendMessage("TEMARIO_ERR|Formato invalido"); return; }
+        int carpetaId;
+        try { carpetaId = Integer.parseInt(p[1]); } catch (NumberFormatException e) { sendMessage("TEMARIO_ERR|ID invalido"); return; }
+        byte[] data;
+        try { data = java.util.Base64.getDecoder().decode(p[4]); }
+        catch (Exception e) { sendMessage("TEMARIO_ERR|Datos invalidos"); return; }
+        if (data.length > 10 * 1024 * 1024) { sendMessage("TEMARIO_ERR|Archivo demasiado grande (max 10 MB)"); return; }
+        int id = Server.db.uploadTemarioDoc(p[2], carpetaId, p[3], data, playerId);
+        if (id < 0) { sendMessage("TEMARIO_ERR|No se pudo subir el archivo"); return; }
+        sendMessage("TEMARIO_OK|doc|" + id + "|" + p[2] + "|" + p[1] + "|" + p[3] + "|" + data.length);
+    }
+
+    private void handleTemarioDownload(int docId) {
+        String[] doc = Server.db.getTemarioDoc(docId);
+        if (doc == null) { sendMessage("TEMARIO_ERR|Documento no encontrado"); return; }
+        sendMessage("TEMARIO_FILE|" + doc[0] + "|" + doc[1]);
+    }
+
+    private void handlePmOpen(String targetName) {
+        if (targetName.equals(playerName)) return;
+        Server.state.sendToPlayer(targetName, "PM_OPENED|" + playerName + "|" + playerColor);
+    }
+
+    private void handlePmMsg(String targetName, String message) {
+        if (message.isEmpty() || message.length() > 200) return;
+        Server.state.sendToPlayer(targetName, "PM_RECV|" + playerName + "|" + playerColor + "|" + message);
     }
 
     // ── Desconexión ───────────────────────────────────────────────────────

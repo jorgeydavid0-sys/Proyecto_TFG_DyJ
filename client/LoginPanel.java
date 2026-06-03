@@ -4,22 +4,15 @@ import java.awt.event.*;
 
 public class LoginPanel extends JPanel {
 
-    private static final Color BG      = new Color(15, 15, 30);
-    private static final Color PANEL   = new Color(25, 25, 50);
-    private static final Color ACCENT  = new Color(74, 144, 217);
-    private static final Color BTN_REG = new Color(46, 204, 113);
-
-    private static final String[] PRESET_COLORS = {
-        "#4A90D9","#E74C3C","#2ECC71","#F39C12","#9B59B6","#1ABC9C"
-    };
+    private static final Color BG     = new Color(15, 15, 30);
+    private static final Color PANEL  = new Color(25, 25, 50);
+    private static final Color ACCENT = new Color(74, 144, 217);
 
     private final Client client;
 
-    private final JTextField  nameField     = new JTextField(18);
-    private final JPasswordField passField  = new JPasswordField(18);
-    private final JLabel      statusLabel   = new JLabel(" ");
-    private String selectedColor            = PRESET_COLORS[0];
-    private final JButton[]   colorBtns     = new JButton[PRESET_COLORS.length];
+    private final JTextField   nameField   = new JTextField(18);
+    private final JPasswordField passField = new JPasswordField(18);
+    private final JLabel       statusLabel = new JLabel(" ");
 
     public LoginPanel(Client client) {
         this.client = client;
@@ -34,7 +27,7 @@ public class LoginPanel extends JPanel {
         card.setLayout(new GridBagLayout());
         card.setBorder(BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(ACCENT, 1),
-            BorderFactory.createEmptyBorder(30, 40, 30, 40)
+            BorderFactory.createEmptyBorder(34, 44, 34, 44)
         ));
 
         GridBagConstraints c = new GridBagConstraints();
@@ -53,70 +46,35 @@ public class LoginPanel extends JPanel {
         sub.setForeground(new Color(120, 140, 180));
         c.gridy++; card.add(sub, c);
 
-        // Separador
-        c.gridy++; c.insets = new Insets(14, 0, 6, 0);
+        // Campos
+        c.gridy++; c.insets = new Insets(18, 0, 6, 0);
         card.add(makeLabel("Usuario:"), c);
 
         styleField(nameField);
-        c.gridy++; c.insets = new Insets(2, 0, 8, 0);
+        c.gridy++; c.insets = new Insets(2, 0, 10, 0);
         card.add(nameField, c);
 
         c.gridy++; c.insets = new Insets(6, 0, 6, 0);
         card.add(makeLabel("Contraseña:"), c);
 
         styleField(passField);
-        c.gridy++; c.insets = new Insets(2, 0, 12, 0);
+        c.gridy++; c.insets = new Insets(2, 0, 20, 0);
         card.add(passField, c);
 
-        // Color picker
-        c.gridy++; c.insets = new Insets(4, 0, 4, 0);
-        card.add(makeLabel("Color de avatar:"), c);
-
-        JPanel colorPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 6, 0));
-        colorPanel.setBackground(PANEL);
-        for (int i = 0; i < PRESET_COLORS.length; i++) {
-            final int idx = i;
-            final String hex = PRESET_COLORS[i];
-            JButton btn = new JButton();
-            btn.setPreferredSize(new Dimension(28, 28));
-            btn.setBackground(Color.decode(hex));
-            btn.setBorder(i == 0
-                ? BorderFactory.createLineBorder(Color.WHITE, 2)
-                : BorderFactory.createLineBorder(new Color(60,60,80), 1));
-            btn.setFocusPainted(false);
-            btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            btn.addActionListener(e -> {
-                selectedColor = hex;
-                for (int j = 0; j < colorBtns.length; j++)
-                    colorBtns[j].setBorder(j == idx
-                        ? BorderFactory.createLineBorder(Color.WHITE, 2)
-                        : BorderFactory.createLineBorder(new Color(60,60,80), 1));
-            });
-            colorBtns[i] = btn;
-            colorPanel.add(btn);
-        }
-        c.gridy++; c.insets = new Insets(2, 0, 14, 0);
-        card.add(colorPanel, c);
-
-        // Botones
+        // Botón entrar
         JButton loginBtn = makeButton("Entrar", ACCENT);
         loginBtn.addActionListener(e -> doLogin());
-        c.gridy++; c.insets = new Insets(4, 0, 6, 0);
+        c.gridy++; c.insets = new Insets(0, 0, 8, 0);
         card.add(loginBtn, c);
-
-        JButton regBtn = makeButton("Registrarse", BTN_REG);
-        regBtn.addActionListener(e -> doRegister());
-        c.gridy++; c.insets = new Insets(0, 0, 6, 0);
-        card.add(regBtn, c);
 
         // Status
         statusLabel.setForeground(new Color(231, 76, 60));
         statusLabel.setFont(new Font("SansSerif", Font.PLAIN, 11));
         statusLabel.setHorizontalAlignment(SwingConstants.CENTER);
-        c.gridy++;
+        c.gridy++; c.insets = new Insets(4, 0, 0, 0);
         card.add(statusLabel, c);
 
-        // Enter key en password → login
+        // Enter en password → login, Tab en usuario → contraseña
         passField.addActionListener(e -> doLogin());
         nameField.addActionListener(e -> passField.requestFocus());
 
@@ -131,21 +89,9 @@ public class LoginPanel extends JPanel {
         client.sendMessage("LOGIN|" + nombre + "|" + pass);
     }
 
-    private void doRegister() {
-        String nombre = nameField.getText().trim();
-        String pass   = new String(passField.getPassword()).trim();
-        if (nombre.isEmpty() || pass.isEmpty()) { setStatus("Rellena todos los campos"); return; }
-        if (nombre.length() < 3)  { setStatus("Nombre mínimo 3 caracteres"); return; }
-        if (pass.length() < 4)    { setStatus("Contraseña mínimo 4 caracteres"); return; }
-        setStatus("Registrando...");
-        client.sendMessage("REGISTER|" + nombre + "|" + pass + "|" + selectedColor);
-    }
-
     public void setStatus(String msg) {
         SwingUtilities.invokeLater(() -> statusLabel.setText(msg));
     }
-
-    // ── Helpers de estilo ──────────────────────────────────────────────────
 
     private JLabel makeLabel(String text) {
         JLabel l = new JLabel(text);
@@ -171,7 +117,7 @@ public class LoginPanel extends JPanel {
         b.setForeground(Color.WHITE);
         b.setFont(new Font("SansSerif", Font.BOLD, 13));
         b.setFocusPainted(false);
-        b.setBorder(BorderFactory.createEmptyBorder(8, 0, 8, 0));
+        b.setBorder(BorderFactory.createEmptyBorder(9, 0, 9, 0));
         b.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         b.addMouseListener(new MouseAdapter() {
             final Color orig = bg;

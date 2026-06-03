@@ -42,23 +42,24 @@ public class GameWindow extends JFrame {
     }
 
     private void handleLoginOk(String message) {
-        // LOGIN_OK|nombre|color|rol|userId|x|y|zone
+        // LOGIN_OK|nombre|color|rol|userId|x|y|zone|primer_login
         String[] p = message.split("\\|");
         if (p.length < 8) return;
-        String nombre = p[1];
-        String color  = p[2];
-        String rol    = p[3];
-        int    userId = Integer.parseInt(p[4]);
-        int    px     = Integer.parseInt(p[5]);
-        int    py     = Integer.parseInt(p[6]);
-        String zone   = p[7];
+        String  nombre     = p[1];
+        String  color      = p[2];
+        String  rol        = p[3];
+        int     userId     = Integer.parseInt(p[4]);
+        int     px         = Integer.parseInt(p[5]);
+        int     py         = Integer.parseInt(p[6]);
+        String  zone       = p[7];
+        boolean primerLogin = p.length >= 9 && "true".equals(p[8]);
 
         if ("admin".equals(rol)) {
             adminPanel = new AdminPanel(client, nombre, userId);
             setContentPane(adminPanel);
             setSize(820, 580);
         } else {
-            gamePanel = new GamePanel(client, nombre, color, rol, userId, px, py, zone);
+            gamePanel = new GamePanel(client, nombre, color, rol, userId, px, py, zone, primerLogin);
             setContentPane(gamePanel);
             setSize(840, 600 + 60);
             gamePanel.requestFocusInWindow();

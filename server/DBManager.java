@@ -62,6 +62,8 @@ public class DBManager {
         mockNotas.add(new String[]{"3","2","Programacion Mult.","7.0","Examen","Revisar",     "2026-05-15"});
     }
 
+    private static final int MAX_PDF_BYTES = 10 * 1024 * 1024; // 10 MB
+
     public void connect() {
         try {
             Class.forName("org.postgresql.Driver");
@@ -69,10 +71,279 @@ public class DBManager {
             conn.close();
             connected = true;
             System.out.println("  Conectado a PostgreSQL");
+            initTemario();
+            initTrabajo();
+            initPrimerLogin();
         } catch (Exception e) {
             connected = false;
             System.out.println("  Sin PostgreSQL, usando datos en memoria.");
         }
+    }
+
+    private void initTemario() {
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+             Statement st = c.createStatement()) {
+            st.execute(
+                "CREATE TABLE IF NOT EXISTS temario_carpetas (" +
+                "id SERIAL PRIMARY KEY," +
+                "nombre VARCHAR(200) NOT NULL," +
+                "padre_id INTEGER REFERENCES temario_carpetas(id) ON DELETE CASCADE," +
+                "curso VARCHAR(20) NOT NULL," +
+                "creador_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL," +
+                "fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+            st.execute(
+                "CREATE TABLE IF NOT EXISTS temario_documentos (" +
+                "id SERIAL PRIMARY KEY," +
+                "nombre VARCHAR(200) NOT NULL," +
+                "carpeta_id INTEGER REFERENCES temario_carpetas(id) ON DELETE CASCADE," +
+                "curso VARCHAR(20) NOT NULL," +
+                "contenido BYTEA NOT NULL," +
+                "tamano INTEGER NOT NULL," +
+                "creador_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL," +
+                "fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+        } catch (SQLException e) { System.out.println("initTemario error: " + e.getMessage()); }
+    }
+
+    // ── Temario ─────────────────────────────────────────────────────────
+
+    public String getTemarioData(String curso, boolean esProfesor) {
+        if (!connected) return "||";
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS)) {
+            // Cursos disponibles (para desplegable del profesor)
+            StringBuilder cursos = new StringBuilder();
+            try (Statement st = c.createStatement();
+                 ResultSet rs = st.executeQuery(
+                     "SELECT DISTINCT curso FROM usuarios WHERE curso IS NOT NULL AND curso!='' ORDER BY curso")) {
+                while (rs.next()) { if (cursos.length() > 0) cursos.append(","); cursos.append(rs.getString(1)); }
+            }
+            // Carpetas
+            StringBuilder carpetas = new StringBuilder();
+            String sqlC = esProfesor
+                ? "SELECT id,nombre,COALESCE(padre_id::text,''),curso FROM temario_carpetas ORDER BY curso,nombre"
+                : "SELECT id,nombre,COALESCE(padre_id::text,''),curso FROM temario_carpetas WHERE curso=? ORDER BY nombre";
+            try (PreparedStatement ps = c.prepareStatement(sqlC)) {
+                if (!esProfesor) ps.setString(1, curso);
+                ResultSet rs = ps.executeQuery();
+                while (rs.next()) {
+                    if (carpetas.length() > 0) carpetas.append(REC);
+                    carpetas.append(rs.getString(1)).append(FLD).append(rs.getString(2))
+                            .append(FLD).append(rs.getString(3)).append(FLD).append(rs.getString(4));
+                }
+            }
+            // Documentos (solo metadatos)
+            StringBuilder docs = new StringBuilder();
+            String sqlD = esProfesor
+                ? "SELECT id,nombre,carpeta_id::text,curso,tamano FROM temario_documentos ORDER BY nombre"
+                : "SELECT id,nombre,carpeta_id::text,curso,tamano FROM temario_documentos WHERE curso=? ORDER BY nombre";
+            try (PreparedStatement ps = c.prepareStatement(sqlD)) {
+                if (!esProfesor) ps.setString(1, curso);
+                ResultSet rs = ps.executeQuery();
+                while (rs.next()) {
+                    if (docs.length() > 0) docs.append(REC);
+                    docs.append(rs.getString(1)).append(FLD).append(rs.getString(2)).append(FLD)
+                        .append(rs.getString(3)).append(FLD).append(rs.getString(4)).append(FLD)
+                        .append(rs.getString(5));
+                }
+            }
+            return cursos + "|" + carpetas + "<<DOCS>>" + docs;
+        } catch (SQLException e) { System.out.println("DB error: " + e.getMessage()); return "||"; }
+    }
+
+    public int createTemarioFolder(String nombre, int padreId, String curso, int creadorId) {
+        if (!connected) return -1;
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+             PreparedStatement ps = c.prepareStatement(
+                 "INSERT INTO temario_carpetas(nombre,padre_id,curso,creador_id) VALUES(?,?,?,?) RETURNING id")) {
+            ps.setString(1, nombre);
+            if (padreId > 0) ps.setInt(2, padreId); else ps.setNull(2, java.sql.Types.INTEGER);
+            ps.setString(3, curso);
+            ps.setInt(4, creadorId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) return rs.getInt(1);
+        } catch (SQLException e) { System.out.println("DB error: " + e.getMessage()); }
+        return -1;
+    }
+
+    public int uploadTemarioDoc(String nombre, int carpetaId, String curso, byte[] data, int creadorId) {
+        if (!connected || data.length > MAX_PDF_BYTES) return -1;
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+             PreparedStatement ps = c.prepareStatement(
+                 "INSERT INTO temario_documentos(nombre,carpeta_id,curso,contenido,tamano,creador_id) VALUES(?,?,?,?,?,?) RETURNING id")) {
+            ps.setString(1, nombre);
+            ps.setInt(2, carpetaId);
+            ps.setString(3, curso);
+            ps.setBytes(4, data);
+            ps.setInt(5, data.length);
+            ps.setInt(6, creadorId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) return rs.getInt(1);
+        } catch (SQLException e) { System.out.println("DB error: " + e.getMessage()); }
+        return -1;
+    }
+
+    public String[] getTemarioDoc(int docId) {
+        if (!connected) return null;
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+             PreparedStatement ps = c.prepareStatement(
+                 "SELECT nombre,contenido FROM temario_documentos WHERE id=?")) {
+            ps.setInt(1, docId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                byte[] data = rs.getBytes(2);
+                return new String[]{rs.getString(1), java.util.Base64.getEncoder().encodeToString(data)};
+            }
+        } catch (SQLException e) { System.out.println("DB error: " + e.getMessage()); }
+        return null;
+    }
+
+    // ── Trabajo ──────────────────────────────────────────────────────────
+
+    private void initTrabajo() {
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+             Statement st = c.createStatement()) {
+            st.execute(
+                "CREATE TABLE IF NOT EXISTS trabajos (" +
+                "id SERIAL PRIMARY KEY," +
+                "nombre VARCHAR(200) NOT NULL," +
+                "descripcion TEXT DEFAULT ''," +
+                "fecha_entrega VARCHAR(20) DEFAULT ''," +
+                "curso VARCHAR(20) NOT NULL," +
+                "creador_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL," +
+                "fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+            st.execute(
+                "CREATE TABLE IF NOT EXISTS trabajo_entregas (" +
+                "id SERIAL PRIMARY KEY," +
+                "trabajo_id INTEGER REFERENCES trabajos(id) ON DELETE CASCADE," +
+                "alumno_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE," +
+                "nombre_archivo VARCHAR(200) NOT NULL," +
+                "contenido BYTEA NOT NULL," +
+                "tamano INTEGER NOT NULL," +
+                "fecha_entrega TIMESTAMP DEFAULT CURRENT_TIMESTAMP," +
+                "nota DECIMAL(4,2)," +
+                "comentario_nota TEXT DEFAULT ''," +
+                "UNIQUE(trabajo_id, alumno_id))");
+        } catch (SQLException e) { System.out.println("initTrabajo error: " + e.getMessage()); }
+    }
+
+    public String getTrabajoData(int userId, String curso, boolean esProfesor) {
+        if (!connected) return "||<<STUDENTS>><<ENTREGAS>>";
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS)) {
+            // Cursos disponibles
+            StringBuilder cursos = new StringBuilder();
+            try (Statement st = c.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT DISTINCT curso FROM usuarios WHERE curso IS NOT NULL AND curso!='' ORDER BY curso")) {
+                while (rs.next()) { if (cursos.length()>0) cursos.append(","); cursos.append(rs.getString(1)); }
+            }
+            // Trabajos
+            StringBuilder trabajos = new StringBuilder();
+            String sqlT = esProfesor
+                ? "SELECT id,nombre,descripcion,fecha_entrega,curso FROM trabajos ORDER BY curso,fecha_creacion"
+                : "SELECT id,nombre,descripcion,fecha_entrega,curso FROM trabajos WHERE curso=? ORDER BY fecha_creacion";
+            try (PreparedStatement ps = c.prepareStatement(sqlT)) {
+                if (!esProfesor) ps.setString(1, curso);
+                ResultSet rs = ps.executeQuery();
+                while (rs.next()) {
+                    if (trabajos.length()>0) trabajos.append(REC);
+                    trabajos.append(rs.getString(1)).append(FLD).append(rs.getString(2)).append(FLD)
+                            .append(rs.getString(3)!=null?rs.getString(3):"").append(FLD)
+                            .append(rs.getString(4)!=null?rs.getString(4):"").append(FLD).append(rs.getString(5));
+                }
+            }
+            // Alumnos (solo para profesor)
+            StringBuilder students = new StringBuilder();
+            if (esProfesor) {
+                try (Statement st = c.createStatement();
+                     ResultSet rs = st.executeQuery("SELECT id,nombre,curso FROM usuarios WHERE rol='alumno' AND curso IS NOT NULL AND curso!='' ORDER BY curso,nombre")) {
+                    while (rs.next()) {
+                        if (students.length()>0) students.append(REC);
+                        students.append(rs.getString(1)).append(FLD).append(rs.getString(2)).append(FLD).append(rs.getString(3));
+                    }
+                }
+            }
+            // Entregas
+            StringBuilder entregas = new StringBuilder();
+            String sqlE = esProfesor
+                ? "SELECT te.id,te.trabajo_id,te.alumno_id,te.nombre_archivo,te.tamano,te.fecha_entrega::text,COALESCE(te.nota::text,''),COALESCE(te.comentario_nota,'') FROM trabajo_entregas te ORDER BY te.trabajo_id,te.alumno_id"
+                : "SELECT te.id,te.trabajo_id,te.alumno_id,te.nombre_archivo,te.tamano,te.fecha_entrega::text,COALESCE(te.nota::text,''),COALESCE(te.comentario_nota,'') FROM trabajo_entregas te JOIN trabajos t ON te.trabajo_id=t.id WHERE te.alumno_id=? AND t.curso=?";
+            try (PreparedStatement ps = c.prepareStatement(sqlE)) {
+                if (!esProfesor) { ps.setInt(1, userId); ps.setString(2, curso); }
+                ResultSet rs = ps.executeQuery();
+                while (rs.next()) {
+                    if (entregas.length()>0) entregas.append(REC);
+                    for (int i=1; i<=8; i++) {
+                        if (i>1) entregas.append(FLD);
+                        entregas.append(rs.getString(i)!=null?rs.getString(i):"");
+                    }
+                }
+            }
+            return cursos + "|" + trabajos + "<<STUDENTS>>" + students + "<<ENTREGAS>>" + entregas;
+        } catch (SQLException e) { System.out.println("DB error: "+e.getMessage()); return "||<<STUDENTS>><<ENTREGAS>>"; }
+    }
+
+    public int createTrabajo(String nombre, String descripcion, String fecha, String curso, int creadorId) {
+        if (!connected) return -1;
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+             PreparedStatement ps = c.prepareStatement(
+                 "INSERT INTO trabajos(nombre,descripcion,fecha_entrega,curso,creador_id) VALUES(?,?,?,?,?) RETURNING id")) {
+            ps.setString(1, nombre); ps.setString(2, descripcion);
+            ps.setString(3, fecha);  ps.setString(4, curso); ps.setInt(5, creadorId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) return rs.getInt(1);
+        } catch (SQLException e) { System.out.println("DB error: "+e.getMessage()); }
+        return -1;
+    }
+
+    public int submitTrabajo(int trabajoId, int alumnoId, String nombreArchivo, byte[] data) {
+        if (!connected || data.length > MAX_PDF_BYTES) return -1;
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+             PreparedStatement ps = c.prepareStatement(
+                 "INSERT INTO trabajo_entregas(trabajo_id,alumno_id,nombre_archivo,contenido,tamano) VALUES(?,?,?,?,?) " +
+                 "ON CONFLICT(trabajo_id,alumno_id) DO UPDATE SET nombre_archivo=EXCLUDED.nombre_archivo," +
+                 "contenido=EXCLUDED.contenido,tamano=EXCLUDED.tamano,fecha_entrega=NOW() RETURNING id")) {
+            ps.setInt(1, trabajoId); ps.setInt(2, alumnoId);
+            ps.setString(3, nombreArchivo); ps.setBytes(4, data); ps.setInt(5, data.length);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) return rs.getInt(1);
+        } catch (SQLException e) { System.out.println("DB error: "+e.getMessage()); }
+        return -1;
+    }
+
+    public String[] getTrabajoEntrega(int entregaId) {
+        if (!connected) return null;
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+             PreparedStatement ps = c.prepareStatement("SELECT nombre_archivo,contenido FROM trabajo_entregas WHERE id=?")) {
+            ps.setInt(1, entregaId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) return new String[]{rs.getString(1), java.util.Base64.getEncoder().encodeToString(rs.getBytes(2))};
+        } catch (SQLException e) { System.out.println("DB error: "+e.getMessage()); }
+        return null;
+    }
+
+    public boolean setNotaTrabajo(int entregaId, double nota, String comentario) {
+        if (!connected) return false;
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+             PreparedStatement ps = c.prepareStatement(
+                 "UPDATE trabajo_entregas SET nota=?,comentario_nota=? WHERE id=?")) {
+            ps.setDouble(1, nota); ps.setString(2, comentario); ps.setInt(3, entregaId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) { System.out.println("DB error: "+e.getMessage()); }
+        return false;
+    }
+
+    private void initPrimerLogin() {
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+             Statement st = c.createStatement()) {
+            st.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS primer_login BOOLEAN DEFAULT TRUE");
+        } catch (SQLException e) { System.out.println("initPrimerLogin error: " + e.getMessage()); }
+    }
+
+    public boolean markTutorialDone(int userId) {
+        if (!connected) return false;
+        try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+             PreparedStatement ps = c.prepareStatement("UPDATE usuarios SET primer_login=FALSE WHERE id=?")) {
+            ps.setInt(1, userId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) { System.out.println("DB error: " + e.getMessage()); return false; }
     }
 
     public boolean isConnected() { return connected; }
@@ -83,18 +354,18 @@ public class DBManager {
         if (connected) {
             try (Connection c = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
                  PreparedStatement ps = c.prepareStatement(
-                     "SELECT id, nombre, color, rol FROM usuarios WHERE nombre=? AND password=?")) {
+                     "SELECT id, nombre, color, rol, COALESCE(primer_login, TRUE) FROM usuarios WHERE nombre=? AND password=?")) {
                 ps.setString(1, nombre);
                 ps.setString(2, hash(password, nombre.toLowerCase()));
                 ResultSet rs = ps.executeQuery();
                 if (rs.next())
-                    return new String[]{String.valueOf(rs.getInt(1)), rs.getString(2), rs.getString(3), rs.getString(4)};
+                    return new String[]{String.valueOf(rs.getInt(1)), rs.getString(2), rs.getString(3), rs.getString(4), String.valueOf(rs.getBoolean(5))};
             } catch (SQLException e) { System.out.println("DB error: " + e.getMessage()); }
             return null;
         }
         for (String[] u : mockUsuarios) {
             if (u[1].equalsIgnoreCase(nombre) && u[2].equals(hash(password, nombre.toLowerCase())))
-                return new String[]{u[0], u[1], u[3], u[4]};
+                return new String[]{u[0], u[1], u[3], u[4], "false"};
         }
         return null;
     }
