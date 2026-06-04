@@ -2,7 +2,7 @@ import java.net.*;
 import java.io.*;
 
 public class Client {
-    static final String HOST = "localhost";
+    static final String HOST = "192.168.11.153";
     static final int    PORT = 5000;
 
     private Socket     socket;
