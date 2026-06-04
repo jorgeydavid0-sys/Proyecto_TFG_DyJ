@@ -68,6 +68,15 @@ public class GameState {
         }
     }
 
+    public void sendToPlayer(String name, String message) {
+        for (Map.Entry<ClientHandler, PlayerInfo> e : players.entrySet()) {
+            if (e.getValue().name.equals(name)) {
+                e.getKey().sendMessage(message);
+                return;
+            }
+        }
+    }
+
     // ── Lista de jugadores en zona ────────────────────────────────────────
 
     public List<PlayerInfo> getPlayersInZone(String zone, ClientHandler exclude) {
